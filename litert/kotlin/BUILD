@@ -139,7 +139,7 @@ cc_library(
 # copybara:uncomment_begin(google-only)
 #
 # # The native library that will be part of the "litert-api" package. It includes:
-# # - LiteRT JNI for the CompiledModel API
+# # - LiteRT JNI for the CompiledModel APIs (including Environment and TensorBuffer).
 # android_jni_library(
 #     name = "litert_api_jni_lib",
 #     binary_name = "liblitert_jni.so",
@@ -299,11 +299,14 @@ LITERT_KOTLIN_SRCS_ALL = [
     "src/main/kotlin/com/google/ai/edge/litert/deployment/AiPackModelProvider.kt",
 ]
 
-LITERT_KOTLIN_DEPS = [
-    "@litert_maven//:com_google_android_play_ai_delivery",
+TFLITE_JAVA_DEPS = [
     "@litert_maven//:com_google_guava_guava",
     "@litert_maven//:androidx_lifecycle_lifecycle_common",
     "@org_checkerframework_qual",
+]
+
+LITERT_KOTLIN_DEPS = TFLITE_JAVA_DEPS + [
+    "@litert_maven//:com_google_android_play_ai_delivery",
     "@litert_maven//:org_jetbrains_kotlinx_kotlinx_coroutines_android",
     "@litert_maven//:org_jetbrains_kotlinx_kotlinx_coroutines_guava",
     "@litert_maven//:org_jetbrains_kotlinx_kotlinx_coroutines_play_services",
@@ -311,10 +314,15 @@ LITERT_KOTLIN_DEPS = [
 
 LITERT_API_SRCS_ALL = LITERT_KOTLIN_SRCS_ALL + TFLITE_JAVA_SRCS_API
 
-# Pure Java/Kotlin API library (no native deps)
+JAVACOPTS = select({
+    ":public_maven_build": ["--release 17"],
+    "//conditions:default": [],
+})
+
+# Pure Java/Kotlin API library (no native deps), Compiled Model APIs only.
 kt_android_library(
-    name = "litert_api_no_jni",
-    srcs = LITERT_API_SRCS_ALL,
+    name = "litert_compiled_model_api_no_jni",
+    srcs = LITERT_KOTLIN_SRCS_ALL,
     exports_manifest = 1,
     javacopts = select({
         ":public_maven_build": ["--release 17"],
@@ -326,21 +334,51 @@ kt_android_library(
     deps = LITERT_KOTLIN_DEPS,
 )
 
-# Android library for the litert package, including:
+# Pure Java/Kotlin API library (no native deps), with both
+# Compiled Model APIs and also the older TFLite Interpreter APIs.
+kt_android_library(
+    name = "litert_api_no_jni",
+    srcs = TFLITE_JAVA_SRCS_API,
+    exports_manifest = 1,
+    javacopts = JAVACOPTS,
+    manifest = "src/main/AndroidManifest.xml",
+    proguard_specs = ["//tflite/java:proguard.flags"],
+    visibility = litert_jni_friends(),
+    exports = [":litert_compiled_model_api_no_jni"],
+    deps = TFLITE_JAVA_DEPS,
+)
+
+# Android library for the litert package, CompiledModel APIs only.
+# This includes:
+# - LiteRT Kotlin sources
+# - LiteRT JNI
+kt_android_library(
+    name = "litert_compiled_model_api",
+    srcs = LITERT_KOTLIN_SRCS_ALL,
+    exports_manifest = 1,
+    javacopts = JAVACOPTS,
+    manifest = "src/main/AndroidManifest.xml",
+    proguard_specs = ["//tflite/java:proguard.flags"],
+    visibility = ["//visibility:public"],
+    deps = LITERT_KOTLIN_DEPS + [
+        ":litert_api_jni",  # unuseddeps: keep
+    ],
+)
+
+# Android library for the litert package, with both the CompiledModel APIs and
+# also the older TFLite Interpreter APIs.  This includes:
 # - TFLite Java sources for the API
 # - LiteRT Kotlin sources
 # - LiteRT JNI
 kt_android_library(
     name = "litert_api",
-    srcs = LITERT_API_SRCS_ALL,
+    srcs = TFLITE_JAVA_SRCS_API,
     exports_manifest = 1,
-    javacopts = select({
-        ":public_maven_build": ["--release 17"],
-        "//conditions:default": [],
-    }),
+    javacopts = JAVACOPTS,
     manifest = "src/main/AndroidManifest.xml",
     proguard_specs = ["//tflite/java:proguard.flags"],
     visibility = ["//visibility:public"],
+    exports = [":litert_compiled_model_api"],
     deps = LITERT_KOTLIN_DEPS + [
         ":litert_api_jni",  # unuseddeps: keep
     ],
@@ -363,10 +401,7 @@ kt_android_library(
     name = "litert_for_maven",
     srcs = TFLITE_JAVA_SRCS_IMPL,
     exports_manifest = 1,
-    javacopts = select({
-        ":public_maven_build": ["--release 17"],
-        "//conditions:default": [],
-    }),
+    javacopts = JAVACOPTS,
     manifest = "src/main/AndroidManifest.xml",
     proguard_specs = ["//tflite/java:proguard.flags"],
     visibility = ["//visibility:private"],
