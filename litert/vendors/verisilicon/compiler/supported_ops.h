@@ -7,10 +7,9 @@ namespace litert {
 namespace verisilicon {
 
 // Ops that the Vivante VIP9000 NPU can accelerate via NBG.
-// Start conservative — only ops we KNOW compile successfully through ACUITY
-// (proven via ShuffleNet/MobileNet in the model zoo).
-// Expand as we verify more ops against the NBG compiler.
+// Conservative set proven via MobileNet/ShuffleNet + LLM-relevant ops.
 constexpr LiteRtOpCode kSupportedOps[] = {
+    // Basic ops (proven with MobileNet)
     kLiteRtOpCodeTflConv2d,
     kLiteRtOpCodeTflDepthwiseConv2d,
     kLiteRtOpCodeTflAdd,
@@ -22,11 +21,32 @@ constexpr LiteRtOpCode kSupportedOps[] = {
     kLiteRtOpCodeTflReshape,
     kLiteRtOpCodeTflAveragePool2d,
     kLiteRtOpCodeTflMaxPool2d,
-    kLiteRtOpCodeTflMean,  // global avg pooling is often implemented as Mean
+    kLiteRtOpCodeTflMean,
     kLiteRtOpCodeTflFullyConnected,
     kLiteRtOpCodeTflSoftmax,
     kLiteRtOpCodeTflTranspose,
     kLiteRtOpCodeTflPad,
+    // LLM-relevant ops (pegasus schema supports these)
+    kLiteRtOpCodeTflDequantize,
+    kLiteRtOpCodeTflMinimum,
+    kLiteRtOpCodeTflMaximum,
+    kLiteRtOpCodeTflRsqrt,
+    kLiteRtOpCodeTflLog,
+    kLiteRtOpCodeTflTanh,
+    kLiteRtOpCodeTflSplit,
+    kLiteRtOpCodeTflGather,
+    kLiteRtOpCodeTflResizeNearestNeighbor,
+    kLiteRtOpCodeTflStridedSlice,
+    kLiteRtOpCodeTflMirrorPad,
+    kLiteRtOpCodeTflLess,
+    kLiteRtOpCodeTflReduceMin,
+    kLiteRtOpCodeTflReduceAny,
+    kLiteRtOpCodeTflSum,
+    kLiteRtOpCodeTflFill,
+    kLiteRtOpCodeTflConv3dTranspose,
+    kLiteRtOpCodeTflSpaceToBatchNd,
+    kLiteRtOpCodeTflMatrixSetDiag,
+    kLiteRtOpCodeTflLogicalNot,
 };
 
 constexpr size_t kNumSupportedOps = sizeof(kSupportedOps) / sizeof(kSupportedOps[0]);
