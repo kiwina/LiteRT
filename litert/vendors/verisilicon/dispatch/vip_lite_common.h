@@ -2,7 +2,7 @@
 *
 *    The MIT License (MIT)
 *
-*    Copyright (c) 2017 - 2023 Vivante Corporation
+*    Copyright (c) 2017 - 2024 Vivante Corporation
 *
 *    Permission is hereby granted, free of charge, to any person obtaining a
 *    copy of this software and associated documentation files (the "Software"),
@@ -26,7 +26,7 @@
 *
 *    The GPL License (GPL)
 *
-*    Copyright (C) 2017 - 2023 Vivante Corporation
+*    Copyright (C) 2017 - 2024 Vivante Corporation
 *
 *    This program is free software; you can redistribute it and/or
 *    modify it under the terms of the GNU General Public License
@@ -195,11 +195,15 @@ typedef enum _vip_bool_e {
  */
 typedef enum _vip_status
 {
+    /*!< \brief Indicates a FUSA error occurs */
+    VIP_ERROR_FUSA                  = -17,
+    /*!< \brief Indicates the network hit Not A Number or Infinite error */
+    VIP_ERROR_NAN_INF               = -16,
     /*!< \brief Indicates the network is canceld */
     VIP_ERROR_CANCELED              = -15,
     /*!< \brief Indicates the hardware is recovery done after hang */
     VIP_ERROR_RECOVERY              = -14,
-    /*!< \brief Indicates the hardware is stoped */
+    /*!< \brief Indicates the hardware is stoed */
     VIP_ERROR_POWER_STOP            = -13,
     /*!< \brief Indicates the hardware is in power off status */
     VIP_ERROR_POWER_OFF             = -12,
@@ -213,7 +217,7 @@ typedef enum _vip_status
     VIP_ERROR_MISSING_INPUT_OUTPUT  = -8,
     /*!< \brief Indicates the network binary is invalid */
     VIP_ERROR_INVALID_NETWORK       = -7,
-    /*!< \brief Indicates driver is running out of memory of system */
+    /*!< \brief Indicates driver is running out of memory of video memory */
     VIP_ERROR_OUT_OF_MEMORY         = -6,
     /*!< \brief Indicates there is no enough resource */
     VIP_ERROR_OUT_OF_RESOURCE       = -5,

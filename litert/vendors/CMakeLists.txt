@@ -339,3 +339,14 @@ if(LITERT_ENABLE_SAMSUNG)
 else()
   message(STATUS "Skipping Samsung dispatch: LITECORE_HEADERS_DIR not set")
 endif()
+
+# VeriSilicon (Allwinner A733 / Vivante VIP9000NANO-DI)
+# No external headers needed — ViPLite adapter does late-binding dlopen()
+# of libvip-lite.so at runtime, and the compiler plugin shells out to
+# pegasus at compile time.
+option(LITERT_ENABLE_VERISILICON "Enable VeriSilicon NPU build" ON)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/verisilicon/CMakeLists.txt")
+  add_subdirectory(verisilicon)
+else()
+  message(STATUS "Skipping VeriSilicon dispatch: verisilicon/ not found")
+endif()

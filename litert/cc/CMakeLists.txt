@@ -48,6 +48,7 @@ set(LITERT_CC_PUBLIC_HEADERS
     options/litert_qualcomm_options.h
     options/litert_runtime_options.h
     options/litert_samsung_options.h
+    options/litert_verisilicon_options.h
     options/litert_webnn_options.h
 )
 
@@ -97,6 +98,7 @@ file(GLOB LITERT_CC_DISCOVERED_PUBLIC_SOURCES
     "options/*.cc"
 )
 list(FILTER LITERT_CC_DISCOVERED_PUBLIC_SOURCES EXCLUDE REGEX "_test\\.cc$")
+list(FILTER LITERT_CC_DISCOVERED_PUBLIC_SOURCES EXCLUDE REGEX "options/litert_verisilicon_options\\.cc$")
 if(LITERT_CC_DISCOVERED_PUBLIC_SOURCES)
     message(FATAL_ERROR
         "litert/cc wrapper sources should be header-only.\n"

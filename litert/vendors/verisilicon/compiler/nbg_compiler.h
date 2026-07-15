@@ -52,7 +52,7 @@ class NbgCompiler {
     if (const char* p = getenv("LITERT_VERISILICON_DTYPE")) {
       dtype_ = p;
     } else {
-      dtype_ = "float";
+      dtype_ = "float";  // default: compile model as-is (float)
     }
     keep_temp_ = getenv("LITERT_VERISILICON_KEEP_TEMP") != nullptr;
   }
@@ -87,11 +87,13 @@ class NbgCompiler {
     }
 
     // Step 1: pegasus import tflite → JSON + data
+    // All pegasus commands run with CWD = tmp_dir.
     auto json_path = tmp_dir / "partition.json";
     auto data_path = tmp_dir / "partition.data";
     {
       std::ostringstream cmd;
-      cmd << "python3 " << pegasus_path_ << " import tflite"
+      cmd << "cd " << tmp_dir.string() << " && python3 " << pegasus_path_
+          << " import tflite"
           << " --model " << tflite_path.string()
           << " --output-model " << json_path.string()
           << " --output-data " << data_path.string()
@@ -108,23 +110,52 @@ class NbgCompiler {
                  partition_name.c_str());
     }
 
-    // Step 2: pegasus export ovxlib → NBG
+    // Step 1b: pegasus generate inputmeta
+    auto inputmeta_path = tmp_dir / "partition_inputmeta.yml";
     {
-      // Generate inputmeta.yml — pegasus requires it
-      // We extract input names from the JSON
-      auto inputmeta_path = tmp_dir / "partition_inputmeta.yml";
-      GenerateInputMeta(json_path.string(), inputmeta_path.string());
+      std::ostringstream cmd;
+      cmd << "cd " << tmp_dir.string() << " && python3 " << pegasus_path_
+          << " generate inputmeta"
+          << " --model " << json_path.string()
+          << " --input-meta-output " << inputmeta_path.string()
+          << " 2>&1";
+      std::string output;
+      int rc = RunCommand(cmd.str(), output);
+      if (rc != 0) {
+        VS_LOG_ERR( "pegasus generate inputmeta failed (rc=%d): %s", rc,
+                   output.c_str());
+        if (!keep_temp_) std::filesystem::remove_all(tmp_dir);
+        return {};
+      }
+    }
 
+    // Step 2: pegasus export ovxlib → NBG
+    // The model is taken AS-IS. If the user wants int16 quantization,
+    // they quantize the model BEFORE feeding it to LiteRT. The plugin
+    // passes --model-quantize if the user provides a .quantize file via
+    // LITERT_VERISILICON_QUANTIZE env var, otherwise compiles as-is.
+    {
       auto output_path = tmp_dir / "partition_nbg";
       std::ostringstream cmd;
-      cmd << "python3 " << pegasus_path_ << " export ovxlib"
+      cmd << "cd " << tmp_dir.string() << " && python3 " << pegasus_path_
+          << " export ovxlib"
           << " --pack-nbg-unify"
           << " --optimize " << optimize_
           << " --viv-sdk " << viv_sdk_
           << " --model " << json_path.string()
-          << " --model-data " << data_path.string()
-          << " --dtype " << dtype_
-          << " --with-input-meta " << inputmeta_path.string()
+          << " --model-data " << data_path.string();
+
+      // If user pre-quantized the model, pass the quantize file + dtype
+      const char* quantize_file = getenv("LITERT_VERISILICON_QUANTIZE");
+      if (quantize_file && std::filesystem::exists(quantize_file)) {
+        cmd << " --model-quantize " << quantize_file
+            << " --dtype quantized";
+        VS_LOG( "Using pre-quantized model: %s", quantize_file);
+      } else {
+        cmd << " --dtype " << dtype_;
+      }
+
+      cmd << " --with-input-meta " << inputmeta_path.string()
           << " --output-path " << output_path.string()
           << " 2>&1";
       std::string output;
@@ -140,21 +171,10 @@ class NbgCompiler {
     }
 
     // Step 3: Find and read the NBG file
-    // pegasus creates <output_path>_nbg_unify/network_binary.nb
-    auto nbg_dir = tmp_dir / "partition_nbg_nbg_unify";
-    auto nbg_file = nbg_dir / "network_binary.nb";
-    if (!std::filesystem::exists(nbg_file)) {
-      // Try alternate naming
-      for (const auto& entry : std::filesystem::directory_iterator(tmp_dir)) {
-        if (entry.path().string().find("_nbg_unify") != std::string::npos) {
-          auto candidate = entry.path() / "network_binary.nb";
-          if (std::filesystem::exists(candidate)) {
-            nbg_file = candidate;
-            break;
-          }
-        }
-      }
-    }
+    // pegasus creates <basename(output_path)>_nbg_unify/network_binary.nb
+    // The exact location depends on pegasus version — search broadly.
+    auto nbg_file = findNBGFile(tmp_dir);
+
 
     std::vector<uint8_t> nbg_bytes;
     if (std::filesystem::exists(nbg_file)) {
@@ -190,24 +210,43 @@ class NbgCompiler {
     return pclose(pipe.release());
   }
 
-  // Generate inputmeta.yml from the acuity JSON.
-  // Format: each input tensor name mapped to its shape.
-  void GenerateInputMeta(const std::string& json_path,
-                          const std::string& yml_path) {
-    // Simple heuristic: the default input is named "input" or "input_0"
-    // For robustness, we'd parse the JSON, but pegasus accepts a basic format.
-    // The YAML format acuity expects (dict, not list):
-    //   input_name:
-    //   - [1, H, W, C]
-    std::ofstream yml(yml_path);
-    yml << "input:\n";
-    yml << "- - 1\n";
-    yml << "  - 224\n";
-    yml << "  - 224\n";
-    yml << "  - 3\n";
-    // Note: for production, we'd parse the JSON to get the real input
-    // name and shape. This is a placeholder that works for mobilenet.
+  // Find the NBG file produced by pegasus.
+  // Pegasus creates <something>_nbg_unify/network_binary.nb but the exact
+  // location varies by version. Search the temp dir and its parent.
+  static std::filesystem::path findNBGFile(
+      const std::filesystem::path& tmp_dir) {
+    const char* nb_name = "network_binary.nb";
+
+    // Search pattern 1: tmp_dir/*_nbg_unify/network_binary.nb
+    if (std::filesystem::exists(tmp_dir)) {
+      for (const auto& entry : std::filesystem::directory_iterator(tmp_dir)) {
+        if (entry.path().string().find("_nbg_unify") != std::string::npos) {
+          auto candidate = entry.path() / nb_name;
+          if (std::filesystem::exists(candidate)) return candidate;
+        }
+      }
+    }
+
+    // Search pattern 2: parent/tmp_dir_basename_nbg_unify/network_binary.nb
+    // (pegasus sometimes creates it as a sibling of tmp_dir)
+    auto parent = tmp_dir.parent_path();
+    auto stem = tmp_dir.filename().string() + "_nbg_unify";
+    auto sibling = parent / stem / nb_name;
+    if (std::filesystem::exists(sibling)) return sibling;
+
+    // Search pattern 3: parent/*_nbg_unify/network_binary.nb
+    if (std::filesystem::exists(parent)) {
+      for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+        if (entry.path().string().find("_nbg_unify") != std::string::npos) {
+          auto candidate = entry.path() / nb_name;
+          if (std::filesystem::exists(candidate)) return candidate;
+        }
+      }
+    }
+
+    return {};  // not found
   }
+
 
   std::string pegasus_path_;
   std::string viv_sdk_;

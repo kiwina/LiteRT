@@ -25,6 +25,8 @@
 #endif
 
 #include "litert/c/internal/litert_logging.h"
+#include "litert/c/internal/litert_logging_helper_with_runtime_context.h"
+#include "litert/c/internal/litert_runtime_context.h"
 #include "litert/c/litert_common.h"
 #include "litert/c/litert_environment.h"
 #include "litert/c/litert_environment_options.h"
@@ -71,7 +73,8 @@ std::optional<std::string> GetSharedLibraryDir(
   return std::string(dispatch_lib_dir_any.str_value);
 }
 
-LiteRtStatus LiteRtInitialize(LiteRtEnvironment environment,
+LiteRtStatus LiteRtInitialize(const LiteRtRuntimeContext* runtime_context,
+                              LiteRtEnvironment environment,
                               LiteRtOptions options) {
   LiteRtEnvironmentOptions environment_options;
   LiteRtGetEnvironmentOptions(environment, &environment_options);
@@ -130,7 +133,8 @@ LiteRtStatus LiteRtGetCapabilities(int* capabilities) {
 }
 
 LiteRtStatus LiteRtDeviceContextCreate(
-    LiteRtOptions options, LiteRtDispatchDeviceContext* device_context) {
+    const LiteRtRuntimeContext* runtime_context, LiteRtOptions options,
+    LiteRtDispatchDeviceContext* device_context) {
   if (auto context = LiteRtDispatchDeviceContextT::Create(
           *static_viplite_adapter, options);
       context) {
@@ -210,6 +214,7 @@ LiteRtStatus LiteRtUnregisterTensorBuffer(
 }
 
 LiteRtStatus LiteRtInvocationContextCreate(
+    const LiteRtRuntimeContext* runtime_context,
     LiteRtDispatchDeviceContext device_context,
     LiteRtDispatchExecutableType exec_type,
     const LiteRtMemBuffer* exec_bytecode_buffer, const char* function_name,

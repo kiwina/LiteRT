@@ -55,6 +55,7 @@ set(LITERT_C_PUBLIC_HEADERS
     options/litert_qualcomm_options.h
     options/litert_runtime_options.h
     options/litert_samsung_options.h
+    options/litert_verisilicon_options.h
     options/litert_webnn_options.h
 )
 
@@ -97,6 +98,7 @@ set(LITERT_C_PUBLIC_SOURCES
     options/litert_qualcomm_options.cc
     options/litert_runtime_options.cc
     options/litert_samsung_options.cc
+    options/litert_verisilicon_options.cc
     options/litert_webnn_options.cc
 )
 

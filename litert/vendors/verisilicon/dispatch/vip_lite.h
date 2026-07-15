@@ -1,5 +1,5 @@
 /******************************************************************************\
-|* Copyright (c) 2017-2023 by Vivante Corporation.  All Rights Reserved.      *|
+|* Copyright (c) 2017-2024 by Vivante Corporation.  All Rights Reserved.      *|
 |*                                                                            *|
 |* The material in this file is confidential and contains trade secrets of    *|
 |* of Vivante Corporation.  This is proprietary information owned by Vivante  *|
@@ -19,12 +19,15 @@ extern "C" {
 #endif
 
 /*!
- *\brief The VIP lite API for Convolution Neural Network application on CPU/MCU/DSP type of embedded environment.
+ *\brief The VIP lite API for Convolution Neural Network application on CPU/MCU/DSP type of
+    embedded environment.
  *\details This VIP lite APIs is not thread-safe if vpmdENABLE_MULTIPLE_TASK is set to 0,
            user must guarantee to call these APIs in a proper way.
-           But defines vpmdENABLE_MULTIPLE_TASK 1, VIPLite can support multiple task(multiple thread/process).
+           But defines vpmdENABLE_MULTIPLE_TASK 1, VIPLite can support multiple task
+           (multiple thread/process).
            and it's thread-safe.
- *Memory allocation and file io functions used inside driver internal would depend on working enviroment.
+ *Memory allocation and file io functions used inside driver internal would
+    depend on working enviroment.
 
  *\defgroup group_global   Data Type Definitions and Global APIs,
  *\                        brief Data type definition and global APIs that are used in the VIPLite
@@ -66,26 +69,31 @@ typedef enum _vip_buffer_format_e
     VIP_BUFFER_FORMAT_UINT64     = 11,
     /*! \brief A 64 bit float type of buffer data */
     VIP_BUFFER_FORMAT_FP64       = 12,
+    /*! \brief A signed 4bits tensor */
+    VIP_BUFFER_FORMAT_INT4       = 13,
+    /*! \brief A unsigned 4bits tensor */
+    VIP_BUFFER_FORMAT_UINT4      = 14,
     /*! \brief A bool 8 bit tensor */
     VIP_BUFFER_FORMAT_BOOL8      = 16,
-}   vip_buffer_format_e;
+} vip_buffer_format_e;
 
 /* !\brief The quantization format list for buffer data
- * \ingroup group_buffer
- * \version 1.0
+  * \ingroup group_buffer
+  * \version 1.0
  */
 typedef enum _vip_buffer_quantize_format_e
 {
     /*! \brief Not quantized format */
     VIP_BUFFER_QUANTIZE_NONE                    = 0,
-    /*! \brief A quantization data type which specifies the fixed point position for whole tensor. */
+    /*! \brief A quantization data type which specifies
+               the fixed point position for whole tensor.*/
     VIP_BUFFER_QUANTIZE_DYNAMIC_FIXED_POINT     = 1,
-    /*! \brief A quantization data type which has scale value and zero point to match with TF and
-               Android NN API for whole tensor. */
+    /*! \brief A quantization data type which has scale value and
+               zero point to match with TF and Android NN API for whole tensor. */
     VIP_BUFFER_QUANTIZE_TF_ASYMM                = 2,
     /*! \brief A max vaule support quantize format */
     VIP_BUFFER_QUANTIZE_MAX,
-}   vip_buffer_quantize_format_e;
+} vip_buffer_quantize_format_e;
 
 /* !\brief The memory type for vip buffer
   * \ingroup group_buffer
@@ -103,7 +111,7 @@ typedef enum _vip_buffer_memory_type_e
     VIP_BUFFER_MEMORY_TYPE_DMA_BUF              = 0x003,
     /*! \brief The max memory type */
     VIP_BUFFER_MEMORY_TYPE_MAX,
-}   vip_buffer_memory_type_e;
+} vip_buffer_memory_type_e;
 
 /* \brief The list of create network type
   * \ingroup group_network
@@ -117,7 +125,17 @@ typedef enum _vip_create_network_type_e
     VIP_CREATE_NETWORK_FROM_FILE        = 0x01,
     /*!< \brief Create network from buffer, NBG has been loaded in this buffer before */
     VIP_CREATE_NETWORK_FROM_MEMORY      = 0x02,
-    /*!< \brief Create network from flash */
+    /*!< \brief Create network from flash device or user memory.
+      The *data param of vip_create_network means are:
+       1. If the NPU's MMU is enabled, the *data means that the CPU's logical address which access the memory.
+       2. If the NPU's MMU is disabled, the *data means that the NPU's phyiscal address which access the memory.
+       This is for DDR-less project.
+       1. Load NBG from flash device. The NBG file should be placed to flash device before running VIPLite.
+          Pass the NBG size and the location of NBG in flash device to this API.
+       2. The NBG file pre-load into user memory which alloc via malloc function, or contiguous physical.
+          Advantage: coeff data is not copied again, save more memory than create_network_from_memory type.
+          Need enable VIP's MMU when works on Linux.
+    */
     VIP_CREATE_NETWORK_FROM_FLASH       = 0x04,
 
     VIP_CREATE_NETWORK_MAX,
@@ -134,7 +152,8 @@ typedef enum _vip_dup_network_type_e
     /*!< \brief Duplicate command for sharing weight with another network
         1. Sharing weight with original network.
         2. The original network has the same input/output shape as the dup network.
-        3. Only the input/output addresses of network are difference between the original network with dup network.
+        3. Only the input/output addresses of network are difference between the
+            original network with dup network.
     */
     VIP_DUP_FOR_CMD_BY_NETWORK     = 0x01,
     /*!< \brief Duplicate command for sharing weight with difference network(NBGs)
@@ -185,10 +204,11 @@ typedef enum _vip_query_hardware_property_e
     VIP_QUERY_HW_PROP_CID                = 0,
     /*!< \brief the number of deivce, the returned value is vip_uint32_t */
     VIP_QUERY_HW_PROP_DEVICE_COUNT       = 1,
-    /*!< \brief the number of core count for each device, the returned value is vip_uint32_t * device_count */
+    /*!< \brief the number of core count for each device, the returned value is
+        vip_uint32_t * device_count */
     VIP_QUERY_HW_PROP_CORE_COUNT_EACH_DEVICE  = 2,
     VIP_QUERY_HW_PROP_MAX,
-}  vip_query_hardware_property_e;
+} vip_query_hardware_property_e;
 
 /* \brief The list of properties of a network.
   * \ingroup group_network
@@ -209,17 +229,15 @@ typedef enum _vip_network_property_e
           not used if only use viplite. the returned value is <tt>\ref vip_address_info_t
           */
     VIP_NETWORK_PROP_ADDRESS_INFO = 4,
-    /*!< \brief read interruput irq register value for cleaning up IRQ.
-            the returned value is vip_uint32_t*/
-    VIP_NETWORK_PROP_READ_REG_IRQ = 5,
     /*!< \brief The size of memory pool, the returned value is vip_uint32_t*/
     VIP_NETWORK_PROP_MEMORY_POOL_SIZE = 6,
-
     /*!< \brief The network profling data, the returned value is vip_inference_profile_t */
     VIP_NETWORK_PROP_PROFILING = 7,
-
     /*!< \brief The the number of core for this network, the returned value is vip_uint8_t */
     VIP_NETWORK_PROP_CORE_COUNT  = 8,
+    /*!< \brief get the information of output of dumped layer. the returned value is vip_nld_output_t */
+    VIP_NETWORK_PROP_GET_LAYER_DUMP_OUTPUT = 9,
+
 
     /* set network */
     /* set network property should be called before vip_prepare_network */
@@ -231,16 +249,28 @@ typedef enum _vip_network_property_e
     /*!< \brief set memory pool buffer for network. networks can share a memory pool buffer.
          the set value is <tt>\ref vip_buffer<tt>  */
     VIP_NETWORK_PROP_SET_MEMORY_POOL   = 65,
-    /*!< \brief set device id for network. networks can be submitted this vip device. */
-    VIP_NETWORK_PROP_SET_DEVICE_ID     = 66,
+    /*!< \brief set device index for network. networks can be submitted this vip device. */
+    VIP_NETWORK_PROP_SET_DEVICE_ID     = 66, /* will be rejected later */
+    VIP_NETWORK_PROP_SET_DEVICE_INDEX  = 66,
     /*!< \brief set priority of network. 0 ~ 255, 0 indicates the lowest priority. */
     VIP_NETWORK_PROP_SET_PRIORITY      = 67,
-    /*!< \brief set time out of network. unit: ms */
+    /*!< \brief set time out of network. unit: ms . the value is vip_uint32_t */
     VIP_NETWORK_PROP_SET_TIME_OUT      = 68,
     /*!< \brief set a memory for partial of full pre-load coeff data to this memory.
-       This memory can't be freed until the network is released. */
+       This memory can't be freed until the network is released. the value is vip_buffer */
     VIP_NETWORK_PROP_SET_COEFF_MEMORY  = 69,
-}  vip_network_property_e;
+    /*!< \brief set core index for network. network start with which core of device.
+       the value is vip_buffer data type */
+    VIP_NETWORK_PROP_SET_CORE_INDEX    = 70,
+    /*!< \brief enable probe mode performance function, should be called before vip_prepare_network.
+     * the value is vip_bool_e data type, set 1 to enable NPD */
+    VIP_NETWORK_PROP_SET_ENABLE_NPD    = 71,
+    /*!< \brief enable preload coeff into vipsram. the value is vip_bool_e data type */
+    VIP_NETWORK_PROP_SET_VIPSRAM_PRELOAD = 72,
+    /*!< \brief set layer ids that need to be layer dumped. the value is vip_nld_layer_id_t */
+    VIP_NETWORK_PROP_SET_LAYER_DUMP_ID = 73,
+
+} vip_network_property_e;
 
 /* \brief The list of properties of a group.
   * \ingroup group_network
@@ -255,12 +285,16 @@ typedef enum _vip_group_property_e
     /* set group */
     /* set group property should be called before vip_add_network()
        and all network in group runs on same device */
-    /*!< \brief set device id for group. networks in group can be submitted this vip device.
+    /*!< \brief set device index for group. networks in group can be submitted this vip device.
      * This prop should be called before vip_prepare_network */
-    VIP_GROUP_PROP_SET_DEVICE_ID     = 64,
+    VIP_GROUP_PROP_SET_DEVICE_ID     = 64, /* will be rejected later */
+    VIP_GROUP_PROP_SET_DEVICE_INDEX  = 64,
+    /*!< \brief set core index for group. networks in group start with which core of current device.
+     * This prop should be called before vip_prepare_network */
+    VIP_GROUP_PROP_SET_CORE_INDEX    = 65,
     /*!< \brief setting inference timeout value for group. unit: ms */
     VIP_GROUP_PROP_SET_TIME_OUT      = 68,
-}  vip_group_property_e;
+} vip_group_property_e;
 
 /* \brief The list of property of an input or output.
   * \ingroup group_buffer
@@ -268,15 +302,19 @@ typedef enum _vip_group_property_e
  */
 typedef enum _vip_buffer_property_e
 {
-    /*!< \brief The quantization format, the returned value is <tt>\ref vip_buffer_quantize_format_e </tt> */
+    /*!< \brief The quantization format, the returned value is <tt>\ref
+            vip_buffer_quantize_format_e </tt> */
     VIP_BUFFER_PROP_QUANT_FORMAT         = 0,
     /*!< \brief The number of dimension for this input, the returned value is vip_uint32_t */
     VIP_BUFFER_PROP_NUM_OF_DIMENSION     = 1,
-    /*!< \brief The size of each dimension for this input, the returned value is vip_uint32_t * num_of_dim */
+    /*!< \brief The size of each dimension for this input,
+                the returned value is vip_uint32_t * num_of_dim */
     VIP_BUFFER_PROP_SIZES_OF_DIMENSION   = 2,
-    /*!< \brief The data format for this input, the returned value is <tt>\ref vip_buffer_format_e</tt> */
+    /*!< \brief The data format for this input,
+                the returned value is <tt>\ref vip_buffer_format_e</tt> */
     VIP_BUFFER_PROP_DATA_FORMAT          = 3,
-    /*!< \brief The position of fixed point for dynamic fixed point, the returned value is vip_uint8_t */
+    /*!< \brief The position of fixed point for dynamic fixed point,
+                the returned value is vip_uint8_t */
     VIP_BUFFER_PROP_FIXED_POINT_POS      = 4,
     /*!< \brief The scale value for TF quantization format, the returned value is vip_float_t */
     VIP_BUFFER_PROP_TF_SCALE             = 5,
@@ -284,7 +322,7 @@ typedef enum _vip_buffer_property_e
     VIP_BUFFER_PROP_TF_ZERO_POINT        = 6,
     /*!< \brief The name for network's inputs and outputs, the returned value is vip_char_t[64] */
     VIP_BUFFER_PROP_NAME                 = 7,
-}   vip_buffer_property_e;
+} vip_buffer_property_e;
 
 /* \brief The list of property of operation vip_buffer type.
   * \ingroup group_buffer
@@ -373,6 +411,78 @@ typedef struct _vip_ppu_param_t
     vip_uint32_t global_size[3];
 } vip_ppu_param_t;
 
+/*! \brief the ids(layer id) of layer dump
+ * \ingroup group_network
+*/
+typedef struct _vip_layer_dump_id_t
+{
+    /* the count of layer output dump. Dump all layer output if layer_count is -1*/
+    vip_int32_t layer_count;
+    /* the id of layer output dump */
+    vip_int32_t *layer_id;
+} vip_nld_layer_id_t;
+
+/*! \brief the parameters for vip_buffer
+ * \ingroup group_buffer
+*/
+typedef struct _vip_buffer_param_t
+{
+    /*The number of dimensions specified in *sizes*/
+    vip_uint32_t                               dim_count;
+    /*The pointer to an array of dimension */
+    vip_uint32_t                               dim_size[6];
+    /*Data format for the tensor */
+    vip_uint32_t                               data_format;
+    /*Quantized format */
+    vip_uint32_t                               quant_format;
+    /*The union of quantization information */
+    union {
+        struct {
+            /*Specifies the fixed point position when the input element type is int16,
+                        if 0 calculations are performed in integer math */
+            vip_int32_t                        fixed_point_pos;
+        } dfp;
+
+        struct {
+            /*Scale value for the quantized value */
+            vip_float_t                        tf_scale;
+            /*A 32 bit integer, in range [0, 255] */
+            vip_int32_t                        tf_zero_point;
+        } affine;
+    } quant_data;
+} vip_buffer_param_t;
+
+/*! \brief informations for layer dumped one output
+ * \ingroup group_network
+*/
+typedef struct _vip_nld_output_info_t
+{
+    /* the name of this layer output */
+    vip_char_t                  layer_name[64];
+    /* the id of layer dump. the layer_id is one id in layer_id[] array set via vip_nld_layer_id_t */
+    vip_uint32_t                layer_id;
+    /* if a layer has multiple outputs, this is the index of output in a layer */
+    vip_uint32_t                layer_output_index;
+    /* unique id for this layer. unique id is genereated by Acuity tool */
+    vip_uint32_t                uid;
+    /* the memory parameter for the output */
+    vip_buffer_param_t          param;
+    /* used size of output buffer */
+    vip_uint32_t                size;
+    /* memory pointer for the output buffer */
+    void                        *memory;
+} vip_nld_output_info_t;
+
+/*! \brief the output data for network layer dump
+ * \ingroup group_network
+*/
+typedef struct _vip_nld_output_t
+{
+    /* the count of output */
+    vip_uint32_t            count;
+    /* output information data */
+    vip_nld_output_info_t   *info;
+} vip_nld_output_t;
 
 /***** API Prototypes. *****/
 
@@ -398,17 +508,10 @@ vip_uint32_t vip_get_version(
  * \ingroup group_global
  * \version 1.0
  */
-#ifdef LIBVIP_VERSION_85X
-VIP_API
-vip_status_e vip_init(
-    vip_uint32_t video_mem_size
-    );
-#else
 VIP_API
 vip_status_e vip_init(
     void
     );
-#endif
 
 /*! \brief Terminate VIP lite driver and shut down VIP hardware.
  * \details This function should be the last function called by application.
@@ -454,12 +557,26 @@ vip_status_e vip_create_buffer(
     OUT vip_buffer *buffer
     );
 
+/*
+@brief Create a buffer used by the network's input and output.
+       use vip_create_buffer_from_handle function.
+@param create_param The parametes of buffer be created.
+@param size_of_param The size of create paramters.
+@param buffer The returns buffer object.
+*/
+VIP_API
+vip_status_e vip_create_buffer_cache(
+    IN vip_buffer_create_params_t *create_param,
+    IN vip_uint32_t size_of_param,
+    OUT vip_buffer *buffer
+    );
+
 /*! \brief Create a buffer from user contiguous or scatter non-contiguous physical address.
           the vip_buffer created by this APi doesn't support flush CPU cache in driver.
           So the physical memory should be a non-cache buffer or flush CPU on Host control.
           not map user space logical on Linux.
  *\param [in] create_param The pointer to <tt>\ref vip_buffer_create_params_t </tt> structure.
- *\param [in] physical_table Physical address table. should be wraped for VIP hardware.
+ *\param [in] physical_table Physical address table of VIP. should be wraped for VIP hardware.
  *\param [in] size_table The size of physical memory for each physical_table element.
  *\param [in] physical_num The number of physical table element.
               physical_num is 1 when create buffer from contiguous phyiscal.
@@ -511,7 +628,7 @@ vip_status_e vip_create_buffer_from_handle(
  *\param [in] create_param The pointer to <tt>\ref vip_buffer_create_params_t </tt> structure.
  *\param [in] fd user memory file descriptor.
  *\param [in] memory_size The size of user memory.
-              the handle_size should be aligned to 64byte(vpmdCPU_CACHE_LINE_SIZE) for easy flash CPU cache.
+        the handle_size should be aligned to 64byte(vpmdCPU_CACHE_LINE_SIZE) for easy flash CPU cache.
  *\param [out] buffer. vip lite buffer object.
  *\return <tt>\ref vip_status_e </tt>
  *\ingroup group_buffer
@@ -584,7 +701,8 @@ vip_status_e vip_flush_buffer(
 /*! \brief Create a network object from the given binary data.
  *\details The binary is generated by the binary graph generator and it's a blob binary.
  *\VIP lite Driver could interprete it to create a network object.
- *\param [in] data The pointer to the binary graph. it can be a file path or a memory pointer, depending on type.
+ *\param [in] data The pointer to the binary graph.
+              it can be a file path or a memory pointer, depending on type.
  *\param [in] size_of_data The byte size of data object. the byte size of NBG buffer.
               You can ignore it if create network form fil path.
  *\param [in] type how to create a network object. please refer to vip_create_network_type_e enum.
@@ -622,24 +740,6 @@ vip_status_e vip_dup_network(
     OUT vip_network *dup_network
     );
 
-/*! \brief Weak dup a vip_network object.
-    The weak dup netowrk copy new command buffer. and share coefficient data and ppu instruction with original network.
-    Notes:
-      1. The original network can't be destroy if the weak dup network is running or will be run later.
-      2. The original network has the same input/output shape as the dup network.
-      3. Only the input/output addresses of network are difference between the original network with dup network.
-    eg: Used to support batch network.
-*\param network, original network to be dup.
-*\param dup_network, output network.
-*\return <tt>\ref vip_status_e </tt>
-*\version 1.0
-*/
-VIP_API
-vip_status_e vip_weak_dup_network(
-    IN vip_network network,
-    OUT vip_network *dup_network
-    );
-
 /*! \brief Destroy a network object
  *\details Release all resources allocated for this network.
  *\param [in] network The opaque handle to the network to be destroyed
@@ -652,7 +752,8 @@ vip_status_e vip_destroy_network(
     IN vip_network network
     );
 
-/*! \brief Configure network property. configure network. this API should be called before calling vip_prepare_network.
+/*! \brief Configure network property. configure network. this API should be called before
+           calling vip_prepare_network.
  *\details Configure network's layer inputs/outputs information
  *\param [in] network A property <tt>\ref vip_network_property_e </tt> to be configuied.
  *\return <tt>\ref vip_status_e </tt>
@@ -683,7 +784,8 @@ vip_status_e vip_query_network(
     );
 
 /*! \brief Prepare a network to run on VIP.
- *\details This function only need to be called once to prepare a network and make it ready to execute on VIP hardware.
+ *\details This function only need to be called once to prepare a network and
+           make it ready to execute on VIP hardware.
  * It would do all heavy-duty work, including allocate internal memory resource for this network,
    deploy all operation's resource
  * to internal memory pool, allocate/generate command buffer for this network,
@@ -701,11 +803,13 @@ vip_status_e vip_prepare_network(
     );
 
 /*! \brief Query a property of a specific input of a given network.
- *\details The specified input/property/network must be valid, otherwise VIP_ERROR_INVALID_ARGUMENTS will be returned.
+ *\details The specified input/property/network must be valid,
+           otherwise VIP_ERROR_INVALID_ARGUMENTS will be returned.
  *\param [in] network The opaque handle to the network to be queried
  *\param [in] index Specify which input to be queried in case there are multiple inputs in the network
  *\param [in] property Specify which property application wants to know, see <tt>\ref vip_buffer_property_e </tt>
- *\param [out] value Returned value, the details type/size, please refer to the comment of <tt>\ref vip_input_property_e </tt>
+ *\param [out] value Returned value, the details type/size, please refer to the comment of
+                <tt>\ref vip_input_property_e </tt>
  *\return <tt>\ref vip_status_e </tt>
  *\ingroup group_network
  *\version 1.0
@@ -719,11 +823,13 @@ vip_status_e vip_query_input(
     );
 
 /*! \brief Query a property of a specific output of a given network.
- *\details The specified output/property/network must be valid, otherwise VIP_ERROR_INVALID_ARGUMENTS will be returned.
+ *\details The specified output/property/network must be valid,
+           otherwise VIP_ERROR_INVALID_ARGUMENTS will be returned.
  *\param [in] network The opaque handle to the network to be queried
  *\param [in] index Specify which output to be queried in case there are multiple outputs in the network
  *\param [in] property Specify which property application wants to know, see <tt>\ref vip_buffer_property_e </tt>
- *\param [out] value Returned value, the details type/size, please refer to the comment of <tt>\ref vip_input_property_e </tt>
+ *\param [out] value Returned value, the details type/size, please refer to the comment of
+                <tt>\ref vip_input_property_e </tt>
  *\return <tt>\ref vip_status_e </tt>
  *\ingroup group_network
  *\version 1.0
@@ -737,7 +843,8 @@ vip_status_e vip_query_output(
     );
 
 /*! \brief Attach an input buffer to the specified index of the network.
- *\details All the inputs of the network need to be attached to a valid input buffer before running a network, otherwise
+ *\details All the inputs of the network need to be attached to a valid input buffer before running a network,
+   otherwise
  * VIP_ERROR_MISSING_INPUT_OUTPUT will be returned when calling <tt> \ref vip_run_network </tt>.
    When attaching an input buffer
  * to the network, driver would patch the network command buffer to fill in this input buffer address.
@@ -760,7 +867,8 @@ vip_status_e vip_set_input(
     );
 
 /*! \brief Attach an output buffer to the specified index of the network.
- *\details All the outputs of the network need to be attached to a valid output buffer before running a network, otherwise
+ *\details All the outputs of the network need to be attached to a
+        valid output buffer before running a network, otherwise
  * VIP_ERROR_MISSING_INPUT_OUTPUT will be returned when calling <tt> \ref vip_run_network </tt>.
     When attaching an output buffer
  * to the network, driver would patch the network command buffer to fill in this output buffer address.
@@ -886,7 +994,7 @@ vip_status_e vip_cancel_network(
 
 /*! \brief. give user applications more control over power management for VIP cores.
 *\details. control VIP core frequency and power status by property. see vip_power_property_e.
-*\param ID of the managed device. device_id is 0 if VIP is single core.
+*\param ID of the managed device. device_index is 0 if VIP is single core.
 *\param perperty Control VIP core frequency and power status by property. see vip_power_property_e.
 *\param value The value for vip_power_property_e property.
        Please see vip_power_frequency_t if property is setting to VIP_POWER_PROPERTY_SET_FREQUENCY.
@@ -896,7 +1004,7 @@ vip_status_e vip_cancel_network(
 */
 VIP_API
 vip_status_e vip_power_management(
-    IN vip_uint32_t device_id,
+    IN vip_uint32_t device_index,
     IN vip_power_property_e property,
     IN void *value
     );

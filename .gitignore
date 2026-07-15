@@ -27,4 +27,10 @@ cmake_build/
 /bazel-*
 .vscode/
 *.whl
-/.litert_configure.bazelrc
+/.litert_configure.bazelrccmake_build_x86/
+cmake_build_aarch64/
+*.bak
+.cache/
+.gitconfig
+.keras/
+.launchpadlib/
