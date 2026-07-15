@@ -25,6 +25,7 @@ limitations under the License.
 #include "tflite/core/c/common.h"
 #include "tflite/core/subgraph.h"
 #include "tflite/interpreter_options.h"
+#include "tflite/kernels/internal/float8.h"
 #include "tflite/kernels/internal/portable_tensor_utils.h"
 #include "tflite/kernels/internal/tensor_ctypes.h"
 #include "tflite/kernels/kernel_util.h"
@@ -171,6 +172,44 @@ void copyCastToBFloat16(const Eigen::half* in, Eigen::bfloat16* out,
     return Eigen::bfloat16_impl::float_to_bfloat16_rtne<false>(
         Eigen::half_impl::half_to_float(a));
   });
+}
+
+template <typename Float8T, typename FromT>
+uint8_t castToFloat8Rep(FromT value) {
+  return Float8T::ConvertFrom(static_cast<float>(value)).rep();
+}
+
+template <typename Float8T>
+uint8_t castToFloat8Rep(std::complex<float> value) {
+  return Float8T::ConvertFrom(std::real(value)).rep();
+}
+
+template <typename Float8T, typename FromT>
+void copyCastToFloat8(const FromT* in, uint8_t* out, int num_elements) {
+  std::transform(in, in + num_elements, out,
+                 [](FromT value) { return castToFloat8Rep<Float8T>(value); });
+}
+
+template <typename FromT>
+TfLiteStatus copyToTensor(TfLiteContext* context, const FromT* in,
+                          TfLiteTensor* out, int num_elements);
+
+template <typename Float8T>
+TfLiteStatus copyFloat8ToTensor(TfLiteContext* context, const uint8_t* in,
+                                TfLiteTensor* out, int num_elements) {
+  if ((std::is_same<Float8T, float8_internal::Float8E4M3FN>::value &&
+       out->type == kTfLiteFloat8E4M3FN) ||
+      (std::is_same<Float8T, float8_internal::Float8E5M2>::value &&
+       out->type == kTfLiteFloat8E5M2)) {
+    std::copy(in, in + num_elements, GetTensorData<uint8_t>(out));
+    return kTfLiteOk;
+  }
+
+  std::vector<float> unpacked(num_elements);
+  std::transform(in, in + num_elements, unpacked.begin(), [](uint8_t value) {
+    return static_cast<float>(Float8T::FromRep(value));
+  });
+  return copyToTensor(context, unpacked.data(), out, num_elements);
 }
 
 TfLiteStatus castInt2ToFloat(TfLiteContext* context, const TfLiteTensor* in,
@@ -334,6 +373,14 @@ TfLiteStatus copyToTensor(TfLiteContext* context, const FromT* in,
       copyCastToBFloat16(in, reinterpret_cast<Eigen::bfloat16*>(out->data.bf16),
                          num_elements);
       break;
+    case kTfLiteFloat8E4M3FN:
+      copyCastToFloat8<float8_internal::Float8E4M3FN>(
+          in, GetTensorData<uint8_t>(out), num_elements);
+      break;
+    case kTfLiteFloat8E5M2:
+      copyCastToFloat8<float8_internal::Float8E5M2>(
+          in, GetTensorData<uint8_t>(out), num_elements);
+      break;
     case kTfLiteFloat32:
       copyCast(in, GetTensorData<float>(out), num_elements);
       break;
@@ -400,6 +447,12 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
       return copyToTensor(context,
                           reinterpret_cast<Eigen::bfloat16*>(input->data.bf16),
                           output, num_elements);
+    case kTfLiteFloat8E4M3FN:
+      return copyFloat8ToTensor<float8_internal::Float8E4M3FN>(
+          context, GetTensorData<uint8_t>(input), output, num_elements);
+    case kTfLiteFloat8E5M2:
+      return copyFloat8ToTensor<float8_internal::Float8E5M2>(
+          context, GetTensorData<uint8_t>(input), output, num_elements);
     case kTfLiteFloat32:
       return copyToTensor(context, GetTensorData<float>(input), output,
                           num_elements);
