@@ -8,12 +8,37 @@ How to build the LiteRT VeriSilicon plugin from source.
 
 - Docker
 - The LiteRT source (this repo): `git clone https://github.com/kiwina/LiteRT.git -b verisilicon-a733`
-- VeriSilicon ACUITY toolkit (pegasus.py + VivanteIDE cmdtools)
-- SSH access to the Orange Pi Zero 3W (for sysroot)
+- The Allwinner/VeriSilicon **ACUITY Toolkit** Docker image (provides pegasus + VivanteIDE)
+- SSH access to the Orange Pi Zero 3W (for sysroot and ViPLite headers)
 
-### Docker image
+### ACUITY Toolkit Docker Image
 
-We use a standard Ubuntu 24.04 container with build tools:
+Allwinner provides the ACUITY toolkit as a Docker image. This contains the
+VeriSilicon pegasus toolchain (model import/export), VivanteIDE cmdtools
+(NBG compiler), and the acuitylib Python package.
+
+**Download:** [ACUITY Toolkit Docker image](https://netstorage.allwinnertech.com:5001/sharing/Mh23BhPHq)
+
+**Documentation:** [Allwinner/Radxa ACUITY Environment Setup](https://docs.radxa.com/en/cubie/a7s/app-dev/npu-dev/cubie-acuity-env)
+
+```bash
+# Load the ACUITY Docker image (provides pegasus + VivanteIDE + acuitylib)
+docker load -i acuity-toolkit.tar
+# This creates an image we'll call "nbg_builder" — it has:
+#   /usr/local/acuity_command_line_tools/pegasus.py
+#   /root/Vivante_IDE/VivanteIDE5.11.0/cmdtools
+#   acuitylib installed in Python 3.8 site-packages
+```
+
+> **Note:** We use two containers:
+> - **`nbg_builder`** — the ACUITY image (pegasus + VivanteIDE, for NBG compilation)
+> - **`litert_builder`** — Ubuntu 24.04 (LiteRT CMake build + cross-compiler)
+>
+> The ACUITY container has Ubuntu 20.04 (GCC 9, glibc 2.31) which is too old
+> for our LiteRT x86 binaries. We copy pegasus/VivanteIDE out of it into the
+> litert_builder container.
+
+### LiteRT Build Container
 
 ```bash
 # Create the build container with the repo mounted
@@ -30,17 +55,35 @@ apt-get update && apt-get install -y \
   software-properties-common
 ```
 
-### ACUITY toolkit (pegasus + VivanteIDE)
+### ACUITY Toolkit (copy from ACUITY container)
 
 The ACUITY toolkit provides `pegasus.py` (model import/export) and VivanteIDE
-cmdtools (NBG compiler). Install them inside the Docker container:
+cmdtools (NBG compiler). Copy these from the ACUITY Docker image into the
+litert_builder container:
 
 ```bash
-# Install the acuity wheel in a Python 3.8 venv (pegasus requires Python 3.8)
-python3.8 -m venv /opt/pegasus_venv
-/opt/pegasus_venv/bin/pip install /path/to/acuity-6.30.22-cp38-cp38-manylinux2010_x86_64.whl
+# Start the ACUITY container (if not already running)
+docker start nbg_builder
 
-# Create a python3 wrapper so the plugin can call pegasus
+# Copy pegasus + VivanteIDE cmdtools via the host
+docker cp nbg_builder:/usr/local/acuity_command_line_tools /tmp/acuity_cmd_tools
+docker cp nbg_builder:/root/acuity-toolkit-whl-6.30.22 /tmp/acuity_whl
+docker cp nbg_builder:/root/Vivante_IDE/VivanteIDE5.11.0/cmdtools /tmp/viv_cmdtools
+
+# Copy into litert_builder
+docker cp /tmp/acuity_cmd_tools/. litert_builder:/opt/acuity/
+docker cp /tmp/acuity_whl/. litert_builder:/opt/acuity/
+docker cp /tmp/viv_cmdtools/. litert_builder:/opt/VivanteIDE5.11.0/cmdtools/
+
+# Now inside litert_builder, install the acuity wheel in a Python 3.8 venv
+# (pegasus requires Python 3.8 — the wheel is cp38)
+docker exec -it litert_builder bash
+
+python3.8 -m venv /opt/pegasus_venv
+/opt/pegasus_venv/bin/pip install /opt/acuity/bin/acuity-6.30.22-cp38-cp38-manylinux2010_x86_64.whl
+
+# Create a python3 wrapper so the compiler plugin can invoke pegasus
+# (the plugin hardcodes "python3 <pegasus_path>" in its subprocess call)
 cat > /usr/local/bin/python3 << 'EOF'
 #!/bin/bash
 export VIRTUAL_ENV=/opt/pegasus_venv
@@ -49,14 +92,18 @@ exec /opt/pegasus_venv/bin/python3.8 "$@"
 EOF
 chmod +x /usr/local/bin/python3
 
-# Copy VivanteIDE cmdtools
-cp -r /path/to/VivanteIDE5.11.0/cmdtools /opt/VivanteIDE5.11.0/cmdtools
+# Verify pegasus works
+python3 /opt/acuity/pegasus.py --help
 ```
 
 ### Pi sysroot (for cross-compilation)
 
-The cross-compiler must compile against the Pi's exact glibc 2.36 headers to
-avoid GLIBC_2.38 symbol errors. Rsync the Pi's filesystem:
+The cross-compiler's default sysroot ships glibc 2.39 (Ubuntu 24.04), but the
+Pi runs Debian 12 with **glibc 2.36**. Compiling against the newer headers
+produces binaries that reference `__isoc23_strtoll_l` (GLIBC_2.38) which
+doesn't exist on the Pi.
+
+**Fix:** rsync the Pi's filesystem and use it as the sysroot:
 
 ```bash
 # From the host (not inside Docker)
@@ -67,6 +114,39 @@ rsync -aL opi:/usr/lib/     /tmp/pi-sysroot/usr/lib/
 
 # Copy into the Docker container
 docker cp /tmp/pi-sysroot litert_builder:/pi-sysroot
+```
+
+The toolchain file (`aarch64_linux_toolchain.cmake`) uses `-isystem` flags to
+put the Pi's headers ahead of the cross-compiler's defaults, and `--sysroot`
+to link against the Pi's glibc/libstdc++.
+
+### ViPLite Headers (critical ABI match)
+
+The dispatch plugin's `VipliteAdapterApi` struct uses `decltype(&vip_init)` to
+determine function pointer types at compile time. The headers **must match**
+the `libNBGlinker.so` on the Pi exactly — a signature mismatch causes
+segfaults or silent data corruption.
+
+The Pi ships 2024 Vivante headers at `/usr/include/vip_lite.h`. These have
+been copied into the repo at:
+```
+litert/vendors/verisilicon/dispatch/vip_lite.h        # 2024 version (from Pi)
+litert/vendors/verisilicon/dispatch/vip_lite_common.h  # 2024 version (from Pi)
+```
+
+**Do not replace these with the ACUITY toolkit's headers** — the ACUITY
+container may ship different versions. Always use the headers from the target
+Pi's `/usr/include/`.
+
+To verify the headers match:
+```bash
+# On the Pi:
+md5sum /usr/include/vip_lite.h /usr/include/vip_lite_common.h
+
+# In the repo:
+md5sum litert/vendors/verisilicon/dispatch/vip_lite.h \
+       litert/vendors/verisilicon/dispatch/vip_lite_common.h
+# Both should produce the same checksums
 ```
 
 ## Building

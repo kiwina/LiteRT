@@ -123,12 +123,23 @@ When `run_model` loads a compiled `.tflite`:
 
 The `vip_lite.h` and `vip_lite_common.h` headers in the repo are copied from
 the Pi's `/usr/include/` — they are the exact 2024 Vivante headers matching
-the Pi's `libNBGlinker.so`.
+the Pi's `libNBGlinker.so` (ViPLite 2.0.3.2-AW-2024-08-30).
+
+These are **NOT** the ACUITY toolkit's headers. The ACUITY Docker image
+(https://netstorage.allwinnertech.com:5001/sharing/Mh23BhPHq) may ship
+different header versions. Always use the headers from the target device.
 
 This is critical: the `VipliteAdapterApi::Api` struct uses `decltype(&vip_init)`
 to determine function pointer types at compile time. If the header's function
 signature differs from the `.so`, the call convention mismatches → segfault or
 data corruption.
+
+To copy the correct headers:
+```bash
+# From the Pi's /usr/include/ — these are what the device's .so was built against
+scp opi:/usr/include/vip_lite.h litert/vendors/verisilicon/dispatch/vip_lite.h
+scp opi:/usr/include/vip_lite_common.h litert/vendors/verisilicon/dispatch/vip_lite_common.h
+```
 
 **Rule:** Always compile the dispatch .so against the same headers the target
 device's libNBGlinker.so was built with.

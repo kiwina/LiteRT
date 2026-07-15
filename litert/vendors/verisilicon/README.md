@@ -109,6 +109,31 @@ The compiler plugin reads configuration from environment variables:
 2. **Late binding** — dispatch .so does `dlopen("libNBGlinker.so")` at runtime, no vendor libs needed at link time
 3. **Pegasus subprocess** — NBG compilation uses VeriSilicon's official pegasus toolchain, not a custom compiler
 4. **Matches vendor pattern** — CMake structure mirrors Samsung's implementation exactly
+5. **Exact ABI match** — ViPLite headers are copied from the Pi's `/usr/include/`, not from any SDK download
+
+## ACUITY Toolkit
+
+The NBG compilation step uses VeriSilicon's ACUITY toolkit (pegasus + VivanteIDE).
+Allwinner provides this as a Docker image:
+
+- **Download:** [ACUITY Toolkit Docker image](https://netstorage.allwinnertech.com:5001/sharing/Mh23BhPHq)
+- **Docs:** [Allwinner/Radxa ACUITY Environment Setup](https://docs.radxa.com/en/cubie/a7s/app-dev/npu-dev/cubie-acuity-env)
+
+The ACUITY image provides:
+- `pegasus.py` — model import/export/quantize tool (requires Python 3.8)
+- `VivanteIDE5.11.0/cmdtools` — NBG compiler backend
+- `acuitylib` — Python library for model manipulation
+
+## ViPLite Headers
+
+The `vip_lite.h` and `vip_lite_common.h` headers in `dispatch/` are copied
+**directly from the Pi's `/usr/include/`** — the 2024 Vivante release matching
+the Pi's `libNBGlinker.so` (ViPLite 2.0.3.2-AW-2024-08-30).
+
+These must match the target device exactly. The `VipliteAdapterApi` struct
+uses `decltype(&vip_init)` for function pointer types — a header/ABI mismatch
+causes segfaults. See [Build Guide](docs/BUILD_GUIDE.md#viplite-headers-critical-abi-match)
+for verification steps.
 
 ## See Also
 
