@@ -7,9 +7,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "flatbuffers/flatbuffers.h"
+#include "tflite/schema/schema_generated.h"
 
 // Use fprintf instead of LITERT_LOG to avoid versioned symbol dependencies
 #define VS_LOG(fmt, ...) fprintf(stderr, "[VeriSilicon] " fmt "\n", ##__VA_ARGS__)
@@ -78,36 +82,75 @@ class NbgCompiler {
                    ("litert_nbg_" + partition_name);
     std::filesystem::create_directories(tmp_dir);
 
-    // Write tflite to temp file
+    // Write tflite to temp file, pruning unused operator codes.
+    // LiteRT's partition serializer copies ALL operator codes from the parent
+    // model, including codes for ops that only run on CPU (e.g. StablehloComposite
+    // code 206, DynamicUpdateSlice code 151). Pegasus crashes trying to build a
+    // lookup table for these codes even though no operator uses them.
+    // Fix: use FlatBuffers Object API to UnPack -> prune -> Pack the model.
     auto tflite_path = tmp_dir / "partition.tflite";
     {
-      std::ofstream f(tflite_path, std::ios::binary);
-      f.write(reinterpret_cast<const char*>(tflite_data),
-              static_cast<std::streamsize>(tflite_size));
-    }
+      // Copy to mutable buffer
+      std::vector<uint8_t> tflite_buf(tflite_data, tflite_data + tflite_size);
 
-    // Fix the partition tflite's operator code table.
-    // LiteRT's LiteRtSerializeModel has a bug: it writes operator code indices
-    // from the parent model but only copies 1 entry (DISPATCH_OP) to the
-    // partition's operator code table. This causes pegasus import to crash.
-    // Fix: use fix_opcodes.py which copies operator codes from the original model.
-    {
-      // Copy the fixer script to the temp dir
-      auto fixer_src = std::filesystem::path(__FILE__).parent_path() / "fix_opcodes.py";
-      auto fixer_dst = tmp_dir / "fix_opcodes.py";
-      if (std::filesystem::exists(fixer_src)) {
-        std::filesystem::copy_file(fixer_src, fixer_dst,
-                                    std::filesystem::copy_options::overwrite_existing);
+      // Prune unused operator codes using the FlatBuffers Object API
+      if (tflite_buf.size() >= 16) {
+        auto verifier = flatbuffers::Verifier(tflite_buf.data(), tflite_buf.size());
+        if (verifier.VerifyBuffer<tflite::Model>()) {
+          auto model = std::unique_ptr<tflite::ModelT>(
+              tflite::GetModel(tflite_buf.data())->UnPack());
+          if (model) {
+            // Find which opcode indices are actually used
+            std::vector<bool> used(model->operator_codes.size(), false);
+            for (const auto& sg : model->subgraphs) {
+              for (const auto& op : sg->operators) {
+                if (op->opcode_index >= 0 &&
+                    op->opcode_index < (int32_t)used.size()) {
+                  used[op->opcode_index] = true;
+                }
+              }
+            }
+
+            // Build pruned list and remap
+            std::vector<std::unique_ptr<tflite::OperatorCodeT>> pruned;
+            std::vector<int32_t> remap(model->operator_codes.size(), -1);
+            for (size_t i = 0; i < model->operator_codes.size(); i++) {
+              if (used[i]) {
+                remap[i] = pruned.size();
+                pruned.push_back(std::move(model->operator_codes[i]));
+              }
+            }
+
+            // Update operators with new indices
+            for (auto& sg : model->subgraphs) {
+              for (auto& op : sg->operators) {
+                if (op->opcode_index >= 0 &&
+                    op->opcode_index < (int32_t)remap.size()) {
+                  op->opcode_index = remap[op->opcode_index];
+                }
+              }
+            }
+
+            model->operator_codes = std::move(pruned);
+
+            // Pack back to FlatBuffer
+            flatbuffers::FlatBufferBuilder fbb;
+            auto offset = tflite::Model::Pack(fbb, model.get());
+            fbb.Finish(offset, "TFL3");
+
+            auto* new_data = fbb.GetBufferPointer();
+            auto new_size = fbb.GetSize();
+            tflite_buf.assign(new_data, new_data + new_size);
+
+            VS_LOG("Pruned operator codes: %zu -> %zu, %zu bytes",
+                   remap.size(), model->operator_codes.size(), new_size);
+          }
+        }
       }
-      std::ostringstream cmd;
-      cmd << "cd " << tmp_dir.string() << " && python3 fix_opcodes.py partition.tflite 2>&1";
-      std::string output;
-      RunCommand(cmd.str(), output);
-      if (output.find("FIXED") != std::string::npos) {
-        VS_LOG("Fixed partition tflite: %s", output.c_str());
-      } else if (output.find("OPCODE_TABLE_OK") == std::string::npos) {
-        VS_LOG_ERR("Opcode table fix failed: %s", output.c_str());
-      }
+
+      std::ofstream f(tflite_path, std::ios::binary);
+      f.write(reinterpret_cast<const char*>(tflite_buf.data()),
+              static_cast<std::streamsize>(tflite_buf.size()));
     }
 
     // Step 1: pegasus import tflite → JSON + data

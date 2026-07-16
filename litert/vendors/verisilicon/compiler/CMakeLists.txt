@@ -28,6 +28,8 @@ add_library(verisilicon_compiler_plugin SHARED
 target_include_directories(verisilicon_compiler_plugin
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_BINARY_DIR}/flatbuffers/include
+        ${TFLITE_SOURCE_DIR}
 )
 
 target_link_libraries(verisilicon_compiler_plugin
