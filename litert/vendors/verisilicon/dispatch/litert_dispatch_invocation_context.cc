@@ -39,6 +39,42 @@ inline constexpr auto Pad(X x, Align align) {
   return ((x + align - 1) / align) * align;
 }
 
+// Compute the byte size of a buffer from its ViPLite format + dimensions.
+// This is used when creating NBG-matching buffers to ensure the memcpy
+// size matches the NBG's actual data, not the host-side declared size.
+size_t VipFormatByteWidth(vip_buffer_format_e fmt) {
+  switch (fmt) {
+    case VIP_BUFFER_FORMAT_INT8:
+    case VIP_BUFFER_FORMAT_UINT8:
+    case VIP_BUFFER_FORMAT_BOOL8:
+      return 1;
+    case VIP_BUFFER_FORMAT_INT16:
+    case VIP_BUFFER_FORMAT_UINT16:
+    case VIP_BUFFER_FORMAT_FP16:
+    case VIP_BUFFER_FORMAT_BFP16:
+      return 2;
+    case VIP_BUFFER_FORMAT_FP32:
+    case VIP_BUFFER_FORMAT_INT32:
+    case VIP_BUFFER_FORMAT_UINT32:
+      return 4;
+    case VIP_BUFFER_FORMAT_INT64:
+    case VIP_BUFFER_FORMAT_UINT64:
+    case VIP_BUFFER_FORMAT_FP64:
+      return 8;
+    default:
+      return 4;
+  }
+}
+
+size_t ComputeNbgByteSize(uint32_t num_dims, const uint32_t* sizes,
+                          vip_buffer_format_e fmt) {
+  size_t elems = 1;
+  for (uint32_t i = 0; i < num_dims && i < 6; i++) {
+    elems *= (sizes[i] ? sizes[i] : 1);
+  }
+  return elems * VipFormatByteWidth(fmt);
+}
+
 }  // namespace
 
 namespace litert {
@@ -365,8 +401,10 @@ Expected<void> LiteRtDispatchInvocationContextT::AttachInput(
     nbg_params.sizes[i] = nbg_sizes[i];
   }
 
+  size_t nbg_byte_size = ComputeNbgByteSize(nbg_num_dims, nbg_sizes, nbg_format);
+
   auto nbg_buffer = device_context_->CreateNbgBuffer(
-      nbg_params, viplite_memory_info->size,
+      nbg_params, nbg_byte_size,
       viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST
           ? viplite_memory_info->host_addr
           : nullptr);
@@ -443,8 +481,12 @@ Expected<void> LiteRtDispatchInvocationContextT::AttachOutput(
     nbg_params.sizes[i] = nbg_sizes[i];
   }
 
+  // Compute the actual NBG byte size from queried format+dims, not the
+  // host-side declared size (which may differ when formats don't match).
+  size_t nbg_byte_size = ComputeNbgByteSize(nbg_num_dims, nbg_sizes, nbg_format);
+
   auto nbg_buffer = device_context_->CreateNbgBuffer(
-      nbg_params, viplite_memory_info->size,
+      nbg_params, nbg_byte_size,
       viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST
           ? viplite_memory_info->host_addr
           : nullptr);
@@ -490,7 +532,8 @@ Expected<void> LiteRtDispatchInvocationContextT::Invoke() {
         for (uint32_t j = 0; j < num_dims && j < 6; j++) {
           params.sizes[j] = sizes[j];
         }
-        auto dummy = device_context_->CreateNbgBuffer(params, 0, nullptr);
+        auto dummy = device_context_->CreateNbgBuffer(
+            params, ComputeNbgByteSize(num_dims, sizes, fmt), nullptr);
         if (dummy) {
           model_->SetOutput(i, *dummy);
           if (i >= nbg_output_buffers_.size()) {
