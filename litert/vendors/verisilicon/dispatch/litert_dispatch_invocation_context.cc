@@ -151,7 +151,7 @@ litert::Expected<void> VipliteNetworkT::Run() {
   if (auto result = viplite_adapter_api_.api().run_network(network_);
       result != VIP_SUCCESS) {
     return Error(kLiteRtStatusErrorRuntimeFailure,
-                 "Failed to run viplite network");
+                 absl::StrFormat("Failed to run viplite network (status %d)", result));
   }
   return {};
 }
@@ -470,13 +470,61 @@ Expected<void> LiteRtDispatchInvocationContextT::DetachOutput(
 }
 
 Expected<void> LiteRtDispatchInvocationContextT::Invoke() {
+  // Ensure all NBG outputs have buffers set. Pegasus may produce more outputs
+  // than the partition declared (e.g., intermediate values). Create dummy
+  // buffers for any unset outputs so vip_run_network doesn't fail with
+  // VIP_ERROR_NETWORK_INCOMPATIBLE (-10).
+  for (size_t i = 0; i < model_->OutputCount(); i++) {
+    if (i >= nbg_output_buffers_.size() || !nbg_output_buffers_[i]) {
+      // No buffer set for this output — query NBG's expected format and create one
+      vip_buffer_format_e fmt = VIP_BUFFER_FORMAT_FP32;
+      uint32_t num_dims = 0;
+      uint32_t sizes[8] = {};
+      if (model_->QueryOutput(i, VIP_BUFFER_PROP_DATA_FORMAT, &fmt) &&
+          model_->QueryOutput(i, VIP_BUFFER_PROP_NUM_OF_DIMENSION, &num_dims) &&
+          model_->QueryOutput(i, VIP_BUFFER_PROP_SIZES_OF_DIMENSION, sizes)) {
+        vip_buffer_create_params_t params = {};
+        params.memory_type = VIP_BUFFER_MEMORY_TYPE_HOST;
+        params.data_format = fmt;
+        params.num_of_dims = num_dims > 0 ? num_dims : 1;
+        for (uint32_t j = 0; j < num_dims && j < 6; j++) {
+          params.sizes[j] = sizes[j];
+        }
+        auto dummy = device_context_->CreateNbgBuffer(params, 0, nullptr);
+        if (dummy) {
+          model_->SetOutput(i, *dummy);
+          if (i >= nbg_output_buffers_.size()) {
+            nbg_output_buffers_.resize(i + 1, nullptr);
+          }
+          nbg_output_buffers_[i] = *dummy;
+        }
+      }
+    }
+  }
+
+  // Ensure all NBG inputs have buffers set. Same reasoning.
+  for (size_t i = 0; i < model_->InputCount(); i++) {
+    if (i >= nbg_input_buffers_.size() || !nbg_input_buffers_[i]) {
+      // Check if there's a registered handle we can use
+      if (i < input_buffers_handles_.size()) {
+        auto info = device_context_->GetVipliteMemoryInfo(input_buffers_handles_[i]);
+        if (info && model_->SetInput(i, info->buffer)) {
+          if (i >= nbg_input_buffers_.size()) {
+            nbg_input_buffers_.resize(i + 1, nullptr);
+          }
+          nbg_input_buffers_[i] = info->buffer;
+        }
+      }
+    }
+  }
+
   for (size_t i = 0; i < model_->InputCount(); i++) {
     if (i >= input_buffers_handles_.size()) break;
     auto viplite_memory_info =
         device_context_->GetVipliteMemoryInfo(input_buffers_handles_[i]);
     if (!viplite_memory_info) continue;
     // Use NBG-matching buffer if one was created, otherwise use registered buffer
-    vip_buffer active_buf = nbg_input_buffers_[i]
+    vip_buffer active_buf = (i < nbg_input_buffers_.size() && nbg_input_buffers_[i])
                                 ? nbg_input_buffers_[i]
                                 : viplite_memory_info->buffer;
     if (viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST) {
@@ -496,7 +544,7 @@ Expected<void> LiteRtDispatchInvocationContextT::Invoke() {
     auto viplite_memory_info =
         device_context_->GetVipliteMemoryInfo(output_buffers_handles_[i]);
     if (!viplite_memory_info) continue;
-    vip_buffer active_buf = nbg_output_buffers_[i]
+    vip_buffer active_buf = (i < nbg_output_buffers_.size() && nbg_output_buffers_[i])
                                 ? nbg_output_buffers_[i]
                                 : viplite_memory_info->buffer;
     viplite_adapter_api_.api().flush_buffer(active_buf,
