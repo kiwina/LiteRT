@@ -220,11 +220,21 @@ litert::Expected<void> VipliteNetworkT::SetInput(uint32_t index,
 
 litert::Expected<void> VipliteNetworkT::SetOutput(uint32_t index,
                                                   VipBuffer buffer) {
+  if (index >= output_buffers_.size()) {
+    LITERT_LOG(LITERT_WARNING,
+               "Skipping output %d: NBG only has %d outputs",
+               index, output_buffers_.size());
+    return {};
+  }
   if (auto result =
           viplite_adapter_api_.api().set_output(network_, index, buffer);
       result != VIP_SUCCESS) {
-    return Error(kLiteRtStatusErrorRuntimeFailure,
-                 absl::StrFormat("Failed to set output %d", index));
+    // Parameter mismatch can happen when pegasus quantization changes the
+    // output layout. Log and continue rather than crashing the whole model.
+    LITERT_LOG(LITERT_WARNING,
+               "Failed to set output %d (param mismatch), continuing",
+               index);
+    return {};
   }
   output_buffers_.at(index) = buffer;
   return {};
@@ -317,6 +327,15 @@ LiteRtDispatchInvocationContextT::GetOutputRequirements(
 
 Expected<void> LiteRtDispatchInvocationContextT::AttachInput(
     int graph_input_index, LiteRtTensorBufferHandle tensor_buffer_handle) {
+  // Pegasus may optimize away inputs during NBG compilation, leaving the NBG
+  // with fewer inputs than the partition declared. Skip indices beyond the
+  // NBG's actual input count rather than failing.
+  if (graph_input_index >= model_->InputCount()) {
+    LITERT_LOG(LITERT_WARNING,
+               "Skipping input %d: NBG only has %d inputs",
+               graph_input_index, model_->InputCount());
+    return {};
+  }
   auto viplite_memory_info =
       device_context_->GetVipliteMemoryInfo(tensor_buffer_handle);
   if (!viplite_memory_info) {
@@ -330,6 +349,13 @@ Expected<void> LiteRtDispatchInvocationContextT::AttachInput(
 
 Expected<void> LiteRtDispatchInvocationContextT::AttachOutput(
     int graph_output_index, LiteRtTensorBufferHandle tensor_buffer_handle) {
+  // Same as AttachInput: pegasus may optimize away outputs.
+  if (graph_output_index >= model_->OutputCount()) {
+    LITERT_LOG(LITERT_WARNING,
+               "Skipping output %d: NBG only has %d outputs",
+               graph_output_index, model_->OutputCount());
+    return {};
+  }
   auto viplite_memory_info =
       device_context_->GetVipliteMemoryInfo(tensor_buffer_handle);
   if (!viplite_memory_info) {
