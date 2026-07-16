@@ -29,7 +29,7 @@ namespace verisilicon {
 //   LITERT_VERISILICON_PEGASUS    - path to pegasus.py (required)
 //   LITERT_VERISILICON_VIV_SDK    - path to Vivante IDE (required)
 //   LITERT_VERISILICON_ACUITY_PATH - alternative: path to acuity bin dir
-//   LITERT_VERISILICON_OPTIMIZE   - target config (default: VIP9000NANODI_PID0X1000003B)
+//   LITERT_VERISILICON_OPTIMIZE   - target config (default: VIP9000NANODI_PLUS_PID0X1000003B)
 //   LITERT_VERISILICON_DTYPE      - data type (default: float)
 //   LITERT_VERISILICON_KEEP_TEMP  - if set, don't delete temp files
 class NbgCompiler {
@@ -47,12 +47,12 @@ class NbgCompiler {
     if (const char* p = getenv("LITERT_VERISILICON_OPTIMIZE")) {
       optimize_ = p;
     } else {
-      optimize_ = "VIP9000NANODI_PID0X1000003B";
+      optimize_ = "VIP9000NANODI_PLUS_PID0X1000003B";
     }
     if (const char* p = getenv("LITERT_VERISILICON_DTYPE")) {
       dtype_ = p;
     } else {
-      dtype_ = "float";  // default: compile model as-is (float)
+      dtype_ = "float32";  // default: FP32 I/O (pegasus "float" = FP16!)
     }
     keep_temp_ = getenv("LITERT_VERISILICON_KEEP_TEMP") != nullptr;
   }
@@ -117,6 +117,7 @@ class NbgCompiler {
       cmd << "cd " << tmp_dir.string() << " && python3 " << pegasus_path_
           << " generate inputmeta"
           << " --model " << json_path.string()
+          << " --separated-database"
           << " --input-meta-output " << inputmeta_path.string()
           << " 2>&1";
       std::string output;
@@ -127,6 +128,48 @@ class NbgCompiler {
         if (!keep_temp_) std::filesystem::remove_all(tmp_dir);
         return {};
       }
+    }
+
+    // Step 1c: pegasus generate postprocess-file
+    // The postprocess file adds a dequantize node that converts the NPU's
+    // internal quantized output to FP32 at the NBG boundary. Without this,
+    // quantized models output FP16 which doesn't match LiteRT's FP32 buffers.
+    // We enable add_postproc_node + force_float32 (matching the official
+    // Allwinner model zoo config_yml.py pipeline).
+    auto postprocess_path = tmp_dir / "partition_postprocess.yml";
+    {
+      std::ostringstream cmd;
+      cmd << "cd " << tmp_dir.string() << " && python3 " << pegasus_path_
+          << " generate postprocess-file"
+          << " --model " << json_path.string()
+          << " --postprocess-file-output " << postprocess_path.string()
+          << " 2>&1";
+      std::string output;
+      int rc = RunCommand(cmd.str(), output);
+      if (rc != 0) {
+        VS_LOG_ERR( "pegasus generate postprocess-file failed (rc=%d): %s", rc,
+                   output.c_str());
+        if (!keep_temp_) std::filesystem::remove_all(tmp_dir);
+        return {};
+      }
+
+      // Enable the postproc node: add_postproc_node: false → true
+      // This activates force_float32: true on output tensors.
+      std::ifstream infile(postprocess_path);
+      std::string content((std::istreambuf_iterator<char>(infile)),
+                          std::istreambuf_iterator<char>());
+      infile.close();
+      // Replace all occurrences
+      size_t pos = 0;
+      while ((pos = content.find("add_postproc_node: false", pos)) != std::string::npos) {
+        content.replace(pos, 24, "add_postproc_node: true");
+        pos += 23;
+      }
+      std::ofstream outfile(postprocess_path);
+      outfile << content;
+      outfile.close();
+      VS_LOG( "Enabled postproc node (force_float32) in %s",
+                 postprocess_path.string().c_str());
     }
 
     // Step 2: pegasus export ovxlib → NBG
@@ -143,7 +186,9 @@ class NbgCompiler {
           << " --optimize " << optimize_
           << " --viv-sdk " << viv_sdk_
           << " --model " << json_path.string()
-          << " --model-data " << data_path.string();
+          << " --model-data " << data_path.string()
+          << " --postprocess-file " << postprocess_path.string()
+          << " --target-ide-project linux64";
 
       // If user pre-quantized the model, pass the quantize file + dtype
       const char* quantize_file = getenv("LITERT_VERISILICON_QUANTIZE");
@@ -152,7 +197,7 @@ class NbgCompiler {
             << " --dtype quantized";
         VS_LOG( "Using pre-quantized model: %s", quantize_file);
       } else {
-        cmd << " --dtype " << dtype_;
+        cmd << " --dtype float32";
       }
 
       cmd << " --with-input-meta " << inputmeta_path.string()
