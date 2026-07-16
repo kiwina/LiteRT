@@ -242,37 +242,36 @@ LiteRtStatus LiteRtCompilerPluginCompile(
   result->byte_code.resize(num_partitions);
   result->call_names.resize(num_partitions);
 
+  // Serialize the partitions model ONCE, before compiling any partitions.
+  // Serializing inside the loop causes the DISPATCH_OP custom op (embedded
+  // after each partition compile) to shift operator code indices, breaking
+  // later partitions.
+  uint8_t* buf = nullptr;
+  size_t size = 0, offset = 0;
+  LiteRtModelSerializationOptions opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.bytecode_alignment = 256;  // NPU DMA requirement
+
+  status = LiteRtSerializeModel(partitions, &buf, &size, &offset,
+                                 /*destroy=*/false, opts);
+  if (status != kLiteRtStatusOk) {
+    VS_LOG_ERR("LiteRtSerializeModel failed: %d", static_cast<int>(status));
+    return status;
+  }
+
+  VS_LOG("Serialized: %zu bytes (offset %zu, valid %zu)",
+         size, offset, size - offset);
+
   for (LiteRtParamIndex i = 0; i < num_partitions; ++i) {
-    // Serialize the partitions model to tflite flatbuffer bytes.
-    // For single-partition models (common case), this gives us exactly
-    // what we need. For multi-partition, we serialize the whole model
-    // and compile it as one NBG (pegasus handles multi-subgraph models).
-    uint8_t* buf = nullptr;
-    size_t size = 0, offset = 0;
-    LiteRtModelSerializationOptions opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.bytecode_alignment = 256;  // NPU DMA requirement
-
-    status = LiteRtSerializeModel(partitions, &buf, &size, &offset,
-                                   /*destroy=*/false, opts);
-    if (status != kLiteRtStatusOk) {
-      VS_LOG_ERR("LiteRtSerializeModel failed: %d", static_cast<int>(status));
-      return status;
-    }
-
-    VS_LOG("Serialized: %zu bytes (offset %zu, valid %zu)",
-           size, offset, size - offset);
-
     // Compile to NBG via pegasus
     char partition_name[64];
     snprintf(partition_name, sizeof(partition_name), "partition_%u", i);
     auto nbg = plugin->nbg_compiler.Compile(buf + offset, size - offset,
                                              partition_name);
 
-    free(buf);
-
     if (nbg.empty()) {
       VS_LOG_ERR("NBG compilation failed for partition %u", i);
+      free(buf);
       return kLiteRtStatusErrorRuntimeFailure;
     }
 
@@ -282,6 +281,8 @@ LiteRtStatus LiteRtCompilerPluginCompile(
     VS_LOG("Partition %u: NBG = %zu bytes", i,
                result->byte_code[i].size());
   }
+
+  free(buf);
 
   *compiled_result = reinterpret_cast<LiteRtCompiledResult>(result.release());
   return kLiteRtStatusOk;
