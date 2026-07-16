@@ -31,6 +31,66 @@
 
 using litert::Error;
 
+namespace {
+// Map LiteRT element types to ViPLite buffer formats.
+// This follows the same pattern as TIM-VX's TranslateDataType:
+// the format is derived from the tensor type, not queried from the NBG.
+// The NBG was compiled with the same format baked in at pegasus export time.
+vip_buffer_format_e LiteRtElementTypeToVipFormat(
+    LiteRtElementType element_type) {
+  switch (element_type) {
+    case kLiteRtElementTypeFloat32:
+      return VIP_BUFFER_FORMAT_FP32;
+    case kLiteRtElementTypeFloat16:
+      return VIP_BUFFER_FORMAT_FP16;
+    case kLiteRtElementTypeInt8:
+      return VIP_BUFFER_FORMAT_INT8;
+    case kLiteRtElementTypeInt16:
+      return VIP_BUFFER_FORMAT_INT16;
+    case kLiteRtElementTypeInt32:
+      return VIP_BUFFER_FORMAT_INT32;
+    case kLiteRtElementTypeUInt8:
+      return VIP_BUFFER_FORMAT_UINT8;
+    case kLiteRtElementTypeUInt16:
+      return VIP_BUFFER_FORMAT_UINT16;
+    case kLiteRtElementTypeInt64:
+      return VIP_BUFFER_FORMAT_INT64;
+    case kLiteRtElementTypeUInt64:
+      return VIP_BUFFER_FORMAT_UINT64;
+    case kLiteRtElementTypeBool:
+      return VIP_BUFFER_FORMAT_BOOL8;
+    case kLiteRtElementTypeBFloat16:
+      return VIP_BUFFER_FORMAT_BFP16;
+    default:
+      LITERT_LOG(LITERT_WARNING,
+                 "Unsupported element type %d, defaulting to FP32",
+                 element_type);
+      return VIP_BUFFER_FORMAT_FP32;
+  }
+}
+
+// Populate vip_buffer_create_params_t with the correct format and dimensions
+// from the LiteRT tensor type. ViPLite expects [w, h, c, n] order (reversed
+// from TFLite's NHWC), matching the TIM-VX pattern.
+void PopulateBufferParams(vip_buffer_create_params_t& params,
+                          const LiteRtRankedTensorType& tensor_type) {
+  params.data_format = LiteRtElementTypeToVipFormat(tensor_type.element_type);
+  int rank = tensor_type.layout.rank;
+  if (rank > 0 && rank <= 6) {
+    params.num_of_dims = rank;
+    // Reverse dimensions: TFLite NHWC → ViPLite WHCN
+    for (int i = 0; i < rank; i++) {
+      params.sizes[i] = tensor_type.layout.dimensions[rank - 1 - i];
+    }
+  } else {
+    // Fallback for unusual ranks
+    params.num_of_dims = 1;
+    LITERT_LOG(LITERT_WARNING,
+               "Tensor rank %d is unusual, using 1D buffer", rank);
+  }
+}
+}  // namespace
+
 litert::Expected<LiteRtDispatchDeviceContextT::Ptr>
 LiteRtDispatchDeviceContextT::Create(
     const litert::verisilicon::VipliteAdapterApi& viplite_adapter_api,
@@ -176,8 +236,7 @@ LiteRtDispatchDeviceContextT::RegisterTensorBuffer(
       }
       // Use the Allwinner VIPLite API: create a HOST memory buffer
       tensor_param.memory_type = VIP_BUFFER_MEMORY_TYPE_HOST;
-      tensor_param.num_of_dims = 1;
-      tensor_param.sizes[0] = tensor_buffer_size;
+      PopulateBufferParams(tensor_param, tensor_type);
 
       if (viplite_adapter_api_.api().create_buffer(
               &tensor_param, sizeof(tensor_param), &viplite_buffer) !=
@@ -215,8 +274,7 @@ LiteRtDispatchDeviceContextT::RegisterTensorBuffer(
                    "DMA-BUF is not supported on this platform");
 #endif  // LITERT_HAS_DMABUF_SUPPORT
       tensor_param.memory_type = VIP_BUFFER_MEMORY_TYPE_DMA_BUF;
-      tensor_param.num_of_dims = 1;
-      tensor_param.sizes[0] = tensor_buffer_size;
+      PopulateBufferParams(tensor_param, tensor_type);
 
       if (viplite_adapter_api_.api().create_buffer(
               &tensor_param, sizeof(tensor_param), &viplite_buffer) !=

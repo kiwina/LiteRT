@@ -62,6 +62,30 @@ class LiteRtDispatchDeviceContextT {
   litert::Expected<LiteRtTensorBufferHandle> RegisterTensorBuffer(
       LiteRtTensorBuffer tensor_buffer);
 
+  // Create a new vip_buffer with the given params (used when we need to
+  // create an NBG-matching buffer at attach time, not register time).
+  // Copies host data from src_buffer if non-null.
+  litert::Expected<vip_buffer> CreateNbgBuffer(
+      const vip_buffer_create_params_t& params, size_t size,
+      const void* src_host_addr) {
+    vip_buffer buf = nullptr;
+    if (viplite_adapter_api_.api().create_buffer(
+            const_cast<vip_buffer_create_params_t*>(&params), sizeof(params),
+            &buf) != VIP_SUCCESS) {
+      return litert::Unexpected(kLiteRtStatusErrorRuntimeFailure,
+                                "Failed to create NBG-matching buffer");
+    }
+    if (src_host_addr) {
+      auto handle = viplite_adapter_api_.api().map_buffer(buf);
+      if (handle) {
+        memcpy(handle, src_host_addr, size);
+      }
+      viplite_adapter_api_.api().unmap_buffer(buf);
+      viplite_adapter_api_.api().flush_buffer(buf, VIP_BUFFER_OPER_TYPE_FLUSH);
+    }
+    return buf;
+  }
+
   litert::Expected<void> UnregisterTensorBuffer(
       LiteRtTensorBufferHandle tensor_buffer_handle) {
     return viplite_memory_registry_.Unregister(tensor_buffer_handle);

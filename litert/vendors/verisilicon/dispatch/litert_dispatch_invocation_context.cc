@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -229,12 +230,9 @@ litert::Expected<void> VipliteNetworkT::SetOutput(uint32_t index,
   if (auto result =
           viplite_adapter_api_.api().set_output(network_, index, buffer);
       result != VIP_SUCCESS) {
-    // Parameter mismatch can happen when pegasus quantization changes the
-    // output layout. Log and continue rather than crashing the whole model.
-    LITERT_LOG(LITERT_WARNING,
-               "Failed to set output %d (param mismatch), continuing",
-               index);
-    return {};
+    return Error(kLiteRtStatusErrorRuntimeFailure,
+                 absl::StrFormat("Failed to set output %d (status %d)",
+                                 index, result));
   }
   output_buffers_.at(index) = buffer;
   return {};
@@ -327,9 +325,7 @@ LiteRtDispatchInvocationContextT::GetOutputRequirements(
 
 Expected<void> LiteRtDispatchInvocationContextT::AttachInput(
     int graph_input_index, LiteRtTensorBufferHandle tensor_buffer_handle) {
-  // Pegasus may optimize away inputs during NBG compilation, leaving the NBG
-  // with fewer inputs than the partition declared. Skip indices beyond the
-  // NBG's actual input count rather than failing.
+  // Pegasus may optimize away inputs during NBG compilation.
   if (graph_input_index >= model_->InputCount()) {
     LITERT_LOG(LITERT_WARNING,
                "Skipping input %d: NBG only has %d inputs",
@@ -341,15 +337,53 @@ Expected<void> LiteRtDispatchInvocationContextT::AttachInput(
   if (!viplite_memory_info) {
     return litert::Error(viplite_memory_info.Error());
   }
+
+  // Try setting the input with the existing buffer first.
+  if (model_->SetInput(graph_input_index, viplite_memory_info->buffer)) {
+    input_buffers_handles_.at(graph_input_index) = tensor_buffer_handle;
+    return {};
+  }
+
+  // Buffer format mismatch. Query NBG's expected format and recreate.
+  LITERT_LOG(LITERT_WARNING,
+             "Input %d buffer mismatch, querying NBG format and recreating",
+             graph_input_index);
+
+  vip_buffer_format_e nbg_format = VIP_BUFFER_FORMAT_FP32;
+  uint32_t nbg_num_dims = 0;
+  uint32_t nbg_sizes[8] = {};
+
+  model_->QueryInput(graph_input_index, VIP_BUFFER_PROP_DATA_FORMAT, &nbg_format);
+  model_->QueryInput(graph_input_index, VIP_BUFFER_PROP_NUM_OF_DIMENSION, &nbg_num_dims);
+  model_->QueryInput(graph_input_index, VIP_BUFFER_PROP_SIZES_OF_DIMENSION, nbg_sizes);
+
+  vip_buffer_create_params_t nbg_params = {};
+  nbg_params.memory_type = viplite_memory_info->create_type;
+  nbg_params.data_format = nbg_format;
+  nbg_params.num_of_dims = nbg_num_dims;
+  for (uint32_t i = 0; i < nbg_num_dims && i < 6; i++) {
+    nbg_params.sizes[i] = nbg_sizes[i];
+  }
+
+  auto nbg_buffer = device_context_->CreateNbgBuffer(
+      nbg_params, viplite_memory_info->size,
+      viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST
+          ? viplite_memory_info->host_addr
+          : nullptr);
+  if (!nbg_buffer) {
+    return litert::Error(nbg_buffer.Error());
+  }
+
   LITERT_RETURN_IF_ERROR(
-      model_->SetInput(graph_input_index, viplite_memory_info->buffer));
+      model_->SetInput(graph_input_index, *nbg_buffer));
+  nbg_input_buffers_.at(graph_input_index) = *nbg_buffer;
   input_buffers_handles_.at(graph_input_index) = tensor_buffer_handle;
   return {};
 }
 
 Expected<void> LiteRtDispatchInvocationContextT::AttachOutput(
     int graph_output_index, LiteRtTensorBufferHandle tensor_buffer_handle) {
-  // Same as AttachInput: pegasus may optimize away outputs.
+  // Pegasus may optimize away outputs during NBG compilation.
   if (graph_output_index >= model_->OutputCount()) {
     LITERT_LOG(LITERT_WARNING,
                "Skipping output %d: NBG only has %d outputs",
@@ -361,8 +395,66 @@ Expected<void> LiteRtDispatchInvocationContextT::AttachOutput(
   if (!viplite_memory_info) {
     return litert::Error(viplite_memory_info.Error());
   }
+
+  // Try setting the output with the existing buffer first.
+  if (model_->SetOutput(graph_output_index, viplite_memory_info->buffer)) {
+    // Success — buffer format matches NBG expectation.
+    output_buffers_handles_.at(graph_output_index) = tensor_buffer_handle;
+    return {};
+  }
+
+  // Buffer format mismatch (status -3). Query the NBG's actual expected
+  // format and create a matching buffer.
+  LITERT_LOG(LITERT_WARNING,
+             "Output %d buffer mismatch, querying NBG format and recreating",
+             graph_output_index);
+
+  vip_buffer_format_e nbg_format = VIP_BUFFER_FORMAT_FP32;
+  uint32_t nbg_num_dims = 0;
+  uint32_t nbg_sizes[8] = {};
+
+  auto q_fmt = model_->QueryOutput(graph_output_index,
+                                    VIP_BUFFER_PROP_DATA_FORMAT, &nbg_format);
+  auto q_nd = model_->QueryOutput(graph_output_index,
+                                   VIP_BUFFER_PROP_NUM_OF_DIMENSION,
+                                   &nbg_num_dims);
+  auto q_sz = model_->QueryOutput(graph_output_index,
+                                   VIP_BUFFER_PROP_SIZES_OF_DIMENSION,
+                                   nbg_sizes);
+
+  if (!q_fmt || !q_nd || !q_sz) {
+    return litert::Error(
+        kLiteRtStatusErrorRuntimeFailure,
+        absl::StrFormat("Failed to query NBG output %d format", graph_output_index));
+  }
+
+  LITERT_LOG(LITERT_INFO,
+             "NBG output %d: format=%d, dims=%d, sizes=[%u,%u,%u,%u,%u,%u]",
+             graph_output_index, nbg_format, nbg_num_dims,
+             nbg_sizes[0], nbg_sizes[1], nbg_sizes[2],
+             nbg_sizes[3], nbg_sizes[4], nbg_sizes[5]);
+
+  // Create a new buffer matching the NBG's expected format.
+  vip_buffer_create_params_t nbg_params = {};
+  nbg_params.memory_type = viplite_memory_info->create_type;
+  nbg_params.data_format = nbg_format;
+  nbg_params.num_of_dims = nbg_num_dims;
+  for (uint32_t i = 0; i < nbg_num_dims && i < 6; i++) {
+    nbg_params.sizes[i] = nbg_sizes[i];
+  }
+
+  auto nbg_buffer = device_context_->CreateNbgBuffer(
+      nbg_params, viplite_memory_info->size,
+      viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST
+          ? viplite_memory_info->host_addr
+          : nullptr);
+  if (!nbg_buffer) {
+    return litert::Error(nbg_buffer.Error());
+  }
+
   LITERT_RETURN_IF_ERROR(
-      model_->SetOutput(graph_output_index, viplite_memory_info->buffer));
+      model_->SetOutput(graph_output_index, *nbg_buffer));
+  nbg_output_buffers_.at(graph_output_index) = *nbg_buffer;
   output_buffers_handles_.at(graph_output_index) = tensor_buffer_handle;
   return {};
 }
@@ -379,28 +471,43 @@ Expected<void> LiteRtDispatchInvocationContextT::DetachOutput(
 
 Expected<void> LiteRtDispatchInvocationContextT::Invoke() {
   for (size_t i = 0; i < model_->InputCount(); i++) {
+    if (i >= input_buffers_handles_.size()) break;
     auto viplite_memory_info =
         device_context_->GetVipliteMemoryInfo(input_buffers_handles_[i]);
+    if (!viplite_memory_info) continue;
+    // Use NBG-matching buffer if one was created, otherwise use registered buffer
+    vip_buffer active_buf = nbg_input_buffers_[i]
+                                ? nbg_input_buffers_[i]
+                                : viplite_memory_info->buffer;
     if (viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST) {
-      auto handle =
-          viplite_adapter_api_.api().map_buffer(viplite_memory_info->buffer);
-      memcpy(handle, viplite_memory_info->host_addr, viplite_memory_info->size);
-      viplite_adapter_api_.api().unmap_buffer(viplite_memory_info->buffer);
+      // Copy only the minimum of host size and NBG buffer size to avoid overflow
+      size_t nbg_size = viplite_adapter_api_.api().get_buffer_size(active_buf);
+      size_t copy_size = std::min(nbg_size, viplite_memory_info->size);
+      auto handle = viplite_adapter_api_.api().map_buffer(active_buf);
+      memcpy(handle, viplite_memory_info->host_addr, copy_size);
+      viplite_adapter_api_.api().unmap_buffer(active_buf);
     }
-    viplite_adapter_api_.api().flush_buffer(viplite_memory_info->buffer,
+    viplite_adapter_api_.api().flush_buffer(active_buf,
                                             VIP_BUFFER_OPER_TYPE_FLUSH);
   }
   LITERT_RETURN_IF_ERROR(model_->Run());
   for (size_t i = 0; i < model_->OutputCount(); i++) {
+    if (i >= output_buffers_handles_.size()) break;
     auto viplite_memory_info =
         device_context_->GetVipliteMemoryInfo(output_buffers_handles_[i]);
-    viplite_adapter_api_.api().flush_buffer(viplite_memory_info->buffer,
+    if (!viplite_memory_info) continue;
+    vip_buffer active_buf = nbg_output_buffers_[i]
+                                ? nbg_output_buffers_[i]
+                                : viplite_memory_info->buffer;
+    viplite_adapter_api_.api().flush_buffer(active_buf,
                                             VIP_BUFFER_OPER_TYPE_INVALIDATE);
     if (viplite_memory_info->create_type == VIP_BUFFER_MEMORY_TYPE_HOST) {
-      auto handle =
-          viplite_adapter_api_.api().map_buffer(viplite_memory_info->buffer);
-      memcpy(viplite_memory_info->host_addr, handle, viplite_memory_info->size);
-      viplite_adapter_api_.api().unmap_buffer(viplite_memory_info->buffer);
+      // Copy only the minimum to avoid overflow when NBG format differs
+      size_t nbg_size = viplite_adapter_api_.api().get_buffer_size(active_buf);
+      size_t copy_size = std::min(nbg_size, viplite_memory_info->size);
+      auto handle = viplite_adapter_api_.api().map_buffer(active_buf);
+      memcpy(viplite_memory_info->host_addr, handle, copy_size);
+      viplite_adapter_api_.api().unmap_buffer(active_buf);
     }
   }
   return {};

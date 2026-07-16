@@ -142,6 +142,11 @@ class LiteRtDispatchInvocationContextT {
         model_(std::move(model)) {
     input_buffers_handles_.resize(num_inputs);
     output_buffers_handles_.resize(num_outputs);
+    // NBG-matching buffers (created when the registered buffer's format
+    // doesn't match what the NBG expects). nullptr means use the registered
+    // buffer directly.
+    nbg_input_buffers_.resize(num_inputs, nullptr);
+    nbg_output_buffers_.resize(num_outputs, nullptr);
   }
 
   const litert::verisilicon::VipliteAdapterApi& viplite_adapter_api_;
@@ -149,6 +154,10 @@ class LiteRtDispatchInvocationContextT {
   litert::verisilicon::VipliteNetworkT::ModelPtr model_;
   std::vector<LiteRtTensorBufferHandle> input_buffers_handles_;
   std::vector<LiteRtTensorBufferHandle> output_buffers_handles_;
+  // Buffers created to match NBG's expected format (may differ from the
+  // registered buffers which use the tensor type from LiteRT).
+  std::vector<vip_buffer> nbg_input_buffers_;
+  std::vector<vip_buffer> nbg_output_buffers_;
   std::optional<LiteRtSchedulingInfo> scheduling_info_;
 };
 
